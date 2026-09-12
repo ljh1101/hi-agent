@@ -1,0 +1,213 @@
+# hi-agent
+
+A minimal, general-purpose tool-using agent in TypeScript.
+
+This is an **MVP of the core**: an LLM-driven loop that can call tools, read the
+results, and keep going until it can answer. It has **zero runtime
+dependencies**, runs on plain `node`, and the core four files (`types.ts`,
+`agent.ts`, `llm.ts`, `tools/registry.ts`) are about 620 lines — small enough to
+read in one sitting.
+
+```console
+$ hi-agent "What is (23 * 17) + 9, and what is in the src/ directory?"
+
+-> calculator({"expression":"(23 * 17) + 9"})
+ok (23 * 17) + 9 = 400 (1ms)
+-> list_dir({"path":"src"})
+ok [file] agent.ts (8003 bytes)
+[file] cli.ts (8480 bytes)
+[dir] tools/
+...
+
+(23 * 17) + 9 = 400. src/ contains the agent core, the LLM client, the tool
+registry, the built-in tools and the CLI entry point.
+```
+
+## Requirements
+
+- **Node.js >= 22.18** (24 recommended). The sources are executed directly with
+  Node's built-in TypeScript support, so there is no bundler and no `tsx`.
+- An API key for any **OpenAI-compatible** endpoint: OpenAI, DeepSeek, Moonshot,
+  Groq, Together, Ollama, vLLM, LM Studio, ...
+
+## Quick start
+
+```bash
+npm install                 # only typescript + @types/node (dev)
+cp .env.example .env        # then put your key in it
+
+npm run demo                # watch the loop work with a scripted model, no key needed
+npm run dev "your question" # one turn, then exit
+npm run dev                 # interactive session
+```
+
+Configuration is read from the environment (`.env` is loaded automatically):
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `AGENT_API_KEY` | API key | falls back to `OPENAI_API_KEY`, then `DEEPSEEK_API_KEY` |
+| `AGENT_BASE_URL` | OpenAI-compatible base URL, including `/v1` | `https://api.openai.com/v1` (DeepSeek's URL if only `DEEPSEEK_API_KEY` is set) |
+| `AGENT_MODEL` | Model id | `gpt-4o-mini` (`deepseek-chat` for DeepSeek) |
+
+CLI flags: `--model`, `--base-url`, `--api-key`, `--max-steps`, `--system`,
+`--root`, `--verbose`. See `npm run dev -- --help`.
+
+## How the core works
+
+The whole agent is this loop (`src/agent.ts`):
+
+```ts
+history.push({ role: 'user', content: input })
+
+for (let step = 1; step <= maxSteps; step++) {
+  const reply = await llm.chat(history, tools)            // 1. ask the model
+  history.push({ role: 'assistant', content: reply.content, tool_calls: reply.toolCalls })
+
+  if (reply.toolCalls.length === 0) return reply.content   // 2. no tools? that is the answer
+  for (const call of reply.toolCalls) {
+    const observation = await runTool(call)                // 3. run every tool
+    history.push({ role: 'tool', content: observation, tool_call_id: call.id })
+  }                                                        // 4. loop: the model sees the results
+}
+```
+
+Everything else is scaffolding around those four steps. Three design rules keep
+it robust:
+
+1. **Tool failures are data, not crashes.** Bad JSON arguments, unknown tool
+   names, thrown errors and timeouts all become `Error: ...` observations that
+   the model gets to read and recover from. The loop only throws when the
+   *provider* fails (auth, HTTP, network), because there is nothing to recover
+   from locally.
+2. **The model is just an interface.** `LLM` (`src/types.ts`) has exactly one
+   method. `OpenAICompatibleLLM` implements it over `fetch`; tests swap in a
+   scripted fake. Swapping providers means changing one file, not the loop.
+3. **Tools are just objects.** A tool is a name, a description, a JSON Schema
+   and an `execute` function. There is no plugin system to learn.
+
+## The tools
+
+| Tool | What it does |
+| --- | --- |
+| `calculator` | Exact arithmetic, parsed by a hand-written recursive-descent parser — no `eval` anywhere |
+| `current_time` | Current UTC + local time (the model otherwise has no clock) |
+| `list_dir` | Directory listing with `[dir]`/`[file]` markers and sizes |
+| `read_file` | Read a UTF-8 text file |
+| `write_file` | Create or overwrite a file, creating parent directories |
+
+Adding one is a single object:
+
+```ts
+import type { Tool } from './types.ts'
+
+export const wordCountTool: Tool<{ text: string }> = {
+  name: 'word_count',
+  description: 'Count the words in a piece of text.',
+  parameters: {
+    type: 'object',
+    properties: { text: { type: 'string', description: 'Text to count.' } },
+    required: ['text'],
+    additionalProperties: false,
+  },
+  execute({ text }) {
+    return `${text.trim().split(/\s+/).length} words`
+  },
+}
+```
+
+Then pass it in: `new Agent({ llm, tools: [...createDefaultTools(), wordCountTool] })`.
+
+## Safety model
+
+An agent that can touch the filesystem needs a boundary. The MVP has one:
+
+- **Workspace confinement.** File tools resolve relative to `--root` (the
+  working directory by default) and refuse any path that escapes it, including
+  `..` traversal.
+- **No `eval`.** Model-supplied expressions are parsed against a fixed grammar
+  and a whitelist of math functions.
+- **Bounded cost.** `--max-steps` caps the number of model round-trips per turn,
+  every model request has a 120s timeout, every tool a 30s timeout.
+- **Errors over crashes.** Failures are reported to the model as observations.
+
+There is deliberately **no shell/exec tool** in the MVP: it is the one capability
+that turns "reads the wrong file" into "deletes the wrong thing". Add it behind
+an explicit opt-in flag when you need it.
+
+## Using it as a library
+
+```ts
+import { Agent, OpenAICompatibleLLM, createDefaultTools } from './src/index.ts'
+
+const agent = new Agent({
+  llm: new OpenAICompatibleLLM({
+    apiKey: process.env.AGENT_API_KEY!,
+    baseURL: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+  }),
+  tools: createDefaultTools(),
+  maxSteps: 12,
+  onEvent: (event) => console.log(event),
+})
+
+const result = await agent.run('Summarize what this repository does')
+console.log(result.content, result.stopReason, result.steps)
+
+// `agent.history` keeps the conversation, so the next run() is multi-turn.
+await agent.run('And which file implements the tool registry?')
+```
+
+`onEvent` emits `step`, `assistant`, `tool_call`, `tool_result`, `log`, `final`
+and `max_steps`. Stream them to a UI, or ignore them.
+
+## Project layout
+
+```
+src/
+  types.ts             the whole contract: ChatMessage, LLM, Tool, events (~130 lines)
+  agent.ts             the loop, history management, tool execution, error recovery
+  llm.ts               OpenAI-compatible client over fetch (no SDK)
+  tools/
+    registry.ts        name -> tool map, schema projection
+    calculator.ts      recursive-descent expression parser
+    filesystem.ts      read_file / write_file / list_dir + workspace confinement
+    time.ts            current_time
+    index.ts           the default toolset
+  cli.ts               one-shot and interactive entry point
+examples/demo.ts       the loop running against a scripted model, offline
+test/                  39 tests: loop, parser, tools, wire format, end-to-end
+```
+
+## Tests
+
+```bash
+npm test              # all suites in one process, no network, no API key
+npm run test:isolated # standard `node --test`, one process per file
+npm run typecheck     # tsc --noEmit
+```
+
+The suite never calls a real provider. `test/helpers.ts` provides a
+`ScriptedLLM` (fixes the model's replies) and `serveFakeProvider` (a throwaway
+HTTP server that speaks `chat/completions`), which is enough to cover the wire
+format, the loop's error recovery, and a full multi-step run where a file
+genuinely gets written to disk.
+
+> `npm test` imports the suites into a single process. `node --test` normally
+> spawns one child per file, which sandboxed environments sometimes block; use
+> `npm run test:isolated` when you want the standard isolated behaviour.
+
+## What this MVP deliberately leaves out
+
+Everything below is an addition on top of the same loop, not a rewrite:
+
+- **Streaming** responses and token-by-token output.
+- **Parallel tool execution** (the loop runs tool calls sequentially today).
+- **Retries / backoff** for 429s and transient network errors.
+- **Context management**: summarization or truncation once history outgrows the
+  context window.
+- **Approval gating** for dangerous tools, and a real shell tool behind it.
+- **Persistence**: saving/resuming sessions, and long-term memory.
+- **Multi-agent**: sub-agents, planners, or an MCP client.
+
+Pick the one your use case needs first; the interfaces in `src/types.ts` are
+small enough that none of them require touching the loop.

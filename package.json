@@ -1,0 +1,26 @@
+{
+  "name": "hi-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A minimal, general-purpose tool-using agent in TypeScript",
+  "type": "module",
+  "bin": {
+    "hi-agent": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "node src/cli.ts",
+    "demo": "node examples/demo.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node test/run.ts",
+    "test:isolated": "node --test test/agent.test.ts test/calculator.test.ts test/integration.test.ts test/llm.test.ts test/tools.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.2"
+  }
+}

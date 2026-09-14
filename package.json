@@ -17,7 +17,7 @@
     "start": "node dist/cli.js",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node test/run.ts",
-    "test:isolated": "node --test test/agent.test.ts test/calculator.test.ts test/integration.test.ts test/llm.test.ts test/tools.test.ts"
+    "test:isolated": "node --test test/agent.test.ts test/calculator.test.ts test/config.test.ts test/integration.test.ts test/llm.test.ts test/tools.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

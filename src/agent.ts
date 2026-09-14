@@ -53,7 +53,7 @@ export class Agent {
   /** The live conversation. Grows across `run()` calls, which gives multi-turn memory. */
   readonly history: ChatMessage[] = []
 
-  private readonly llm: LLM
+  private llm: LLM
   private readonly registry: ToolRegistry
   private readonly maxSteps: number
   private readonly root: string
@@ -89,6 +89,11 @@ export class Agent {
     const systemMessages = this.history.filter((message) => message.role === 'system')
     this.history.length = 0
     this.history.push(...systemMessages)
+  }
+
+  /** Swap the model/provider mid-session without losing the conversation. */
+  setLLM(llm: LLM): void {
+    this.llm = llm
   }
 
   /**

@@ -34,20 +34,46 @@ registry, the built-in tools and the CLI entry point.
 
 ```bash
 npm install                 # only typescript + @types/node (dev)
-cp .env.example .env        # then put your key in it
 
 npm run demo                # watch the loop work with a scripted model, no key needed
-npm run dev "your question" # one turn, then exit
+npm run dev "your question" # one turn, then exit (asks for your key the first time)
 npm run dev                 # interactive session
 ```
 
-Configuration is read from the environment (`.env` is loaded automatically):
+## Configuration
+
+On first run with no API key, the CLI walks you through it: pick a provider
+from a preset list (OpenAI, DeepSeek, Moonshot, Groq, Ollama, ...) or enter a
+custom base URL, give it your key, and it **queries that provider's
+`/models` endpoint** to let you pick from the real, currently-available models —
+the model is not hard-coded. Everything is saved to your home directory
+(`~/.config/hi-agent/config.json` on Linux, platform-aware elsewhere), written
+with `0600` permissions and never committed. You can also set an environment
+variable or drop a `.env` file (loaded automatically). Resolution order,
+highest to lowest:
+
+1. CLI flags: `--model`, `--base-url`, `--api-key`, ...
+2. Environment variables (or `.env`)
+3. Project config `<root>/hi-agent.json` — shareable, **secret-free** defaults you can commit
+4. Global config `~/.config/hi-agent/config.json` — your personal key and defaults
+
+A project config holds only non-secret defaults and is safe to commit:
+
+```json
+{ "baseURL": "https://api.openai.com/v1", "model": "gpt-4o-mini" }
+```
+
+See `hi-agent --list-providers` for the preset endpoints and
+`hi-agent --setup` to re-run the guided setup. Inside an interactive session,
+`/model` lists the provider's live models and switches on the spot (your
+conversation is kept), and `/model <id>` jumps straight to a model by name.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `AGENT_API_KEY` | API key | falls back to `OPENAI_API_KEY`, then `DEEPSEEK_API_KEY` |
 | `AGENT_BASE_URL` | OpenAI-compatible base URL, including `/v1` | `https://api.openai.com/v1` (DeepSeek's URL if only `DEEPSEEK_API_KEY` is set) |
 | `AGENT_MODEL` | Model id | `gpt-4o-mini` (`deepseek-chat` for DeepSeek) |
+| `HI_AGENT_CONFIG_DIR` | Override the global config directory | platform default |
 
 CLI flags: `--model`, `--base-url`, `--api-key`, `--max-steps`, `--system`,
 `--root`, `--verbose`. See `npm run dev -- --help`.
@@ -167,6 +193,7 @@ src/
   types.ts             the whole contract: ChatMessage, LLM, Tool, events (~130 lines)
   agent.ts             the loop, history management, tool execution, error recovery
   llm.ts               OpenAI-compatible client over fetch (no SDK)
+  config.ts            global vs project config loading + secret resolution
   tools/
     registry.ts        name -> tool map, schema projection
     calculator.ts      recursive-descent expression parser
@@ -175,7 +202,7 @@ src/
     index.ts           the default toolset
   cli.ts               one-shot and interactive entry point
 examples/demo.ts       the loop running against a scripted model, offline
-test/                  39 tests: loop, parser, tools, wire format, end-to-end
+test/                  48 tests: loop, parser, tools, config, wire format, end-to-end
 ```
 
 ## Tests

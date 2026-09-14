@@ -201,3 +201,20 @@ test('rejects bad JSON object shapes and non-object arguments', async () => {
 test('rejects duplicate tool names in the registry', () => {
   assert.throws(() => new Agent({ llm: new ScriptedLLM([]), tools: [echoTool, echoTool] }), /Duplicate tool name/)
 })
+
+test('setLLM swaps the model mid-session without losing history', async () => {
+  const first = new ScriptedLLM([reply('first model')])
+  const second = new ScriptedLLM([reply('second model')])
+  const agent = new Agent({ llm: first, tools: [] })
+
+  const one = await agent.run('hi')
+  assert.equal(one.content, 'first model')
+
+  agent.setLLM(second)
+  const two = await agent.run('again')
+  assert.equal(two.content, 'second model')
+  assert.equal(second.requests.length, 1)
+
+  // History was preserved across the swap (system prompt + both user turns + answers).
+  assert.equal(agent.history.filter((m) => m.role === 'user').length, 2)
+})

@@ -2,7 +2,10 @@
 import { createInterface } from 'node:readline/promises'
 import process from 'node:process'
 import { Agent } from './agent.ts'
+import { globalConfigDir, loadGlobalConfig, resolveConfig, saveGlobalConfig } from './config.ts'
+import type { HiAgentConfig } from './config.ts'
 import { LLMError, OpenAICompatibleLLM } from './llm.ts'
+import { listModels, PROVIDERS } from './providers.ts'
 import { createDefaultTools } from './tools/index.ts'
 import type { AgentEvent } from './types.ts'
 
@@ -14,6 +17,8 @@ interface CliOptions {
   maxSteps?: number
   systemPrompt?: string
   root?: string
+  setup: boolean
+  listProviders: boolean
   verbose: boolean
   help: boolean
 }
@@ -27,14 +32,22 @@ Usage:
 Options:
   -m, --model <name>       model id (default: $AGENT_MODEL or gpt-4o-mini)
       --base-url <url>     OpenAI-compatible base URL (default: $AGENT_BASE_URL)
-      --api-key <key>      API key (default: $AGENT_API_KEY / $OPENAI_API_KEY / $DEEPSEEK_API_KEY)
+      --api-key <key>      API key (default: $AGENT_API_KEY / global config / $OPENAI_API_KEY / $DEEPSEEK_API_KEY)
       --max-steps <n>      max model round-trips per turn (default: 12)
       --system <text>      override the system prompt
       --root <dir>         workspace root tools may touch (default: cwd)
+      --setup              (re)run the interactive provider + key setup
+      --list-providers     print the provider presets and exit
   -v, --verbose            show model narration and full tool output
   -h, --help               show this help
 
-In-session commands: /reset clears history, exit or quit leaves.
+On first run with no key, hi-agent asks for your provider (so it knows the
+right base URL and model), then your key, and saves both to your home dir
+(~/.config/hi-agent/config.json, written 0600). A project may add a
+hi-agent.json next to --root for shareable, secret-free defaults
+(baseUrl/model) that get committed with the repo.
+
+In-session commands: /reset clears history, /model switches model (or /model <id>), exit or quit leaves.
 
 Examples:
   hi-agent "What time is it, and what is 23 * 17?"
@@ -42,7 +55,7 @@ Examples:
 `
 
 function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = { verbose: false, help: false }
+  const options: CliOptions = { setup: false, listProviders: false, verbose: false, help: false }
   const positional: string[] = []
 
   for (let index = 0; index < argv.length; index++) {
@@ -60,6 +73,12 @@ function parseArgs(argv: string[]): CliOptions {
       case '-v':
       case '--verbose':
         options.verbose = true
+        break
+      case '--setup':
+        options.setup = true
+        break
+      case '--list-providers':
+        options.listProviders = true
         break
       case '-m':
       case '--model':
@@ -104,26 +123,6 @@ function loadDotEnv(): void {
     loader.call(process, '.env')
   } catch {
     // No .env file: environment variables are used as-is.
-  }
-}
-
-interface ResolvedConfig {
-  apiKey: string | undefined
-  baseURL: string
-  model: string
-}
-
-function resolveConfig(options: CliOptions): ResolvedConfig {
-  const env = process.env
-  const deepSeek = !env.OPENAI_API_KEY && Boolean(env.DEEPSEEK_API_KEY)
-  return {
-    apiKey: options.apiKey ?? env.AGENT_API_KEY ?? env.OPENAI_API_KEY ?? env.DEEPSEEK_API_KEY,
-    baseURL:
-      options.baseURL ??
-      env.AGENT_BASE_URL ??
-      env.OPENAI_BASE_URL ??
-      (deepSeek ? 'https://api.deepseek.com/v1' : 'https://api.openai.com/v1'),
-    model: options.model ?? env.AGENT_MODEL ?? env.OPENAI_MODEL ?? (deepSeek ? 'deepseek-chat' : 'gpt-4o-mini'),
   }
 }
 
@@ -187,9 +186,19 @@ function printError(error: unknown): void {
   console.error(color(RED, `error: ${error instanceof Error ? error.message : String(error)}`))
 }
 
-async function repl(agent: Agent, verbose: boolean): Promise<void> {
+interface SessionConfig {
+  agent: Agent
+  verbose: boolean
+  baseURL: string
+  apiKey: string
+  model: string
+  root: string
+}
+
+async function repl(session: SessionConfig): Promise<void> {
+  const { agent, verbose } = session
   const rl = createInterface({ input: process.stdin, output: process.stdout })
-  console.log('hi-agent interactive mode. Commands: /reset, exit. Ctrl+C quits.')
+  console.log('hi-agent interactive mode. Commands: /reset, /model, exit. Ctrl+C quits.')
   try {
     for (;;) {
       let line: string
@@ -206,6 +215,10 @@ async function repl(agent: Agent, verbose: boolean): Promise<void> {
         console.log(color(DIM, '(history cleared)'))
         continue
       }
+      if (input === '/model' || input.startsWith('/model ')) {
+        await switchModel(session, rl, input.slice('/model'.length).trim())
+        continue
+      }
       try {
         const result = await agent.run(input)
         if (result.stopReason === 'final') console.log(`\n${result.content}`)
@@ -217,6 +230,124 @@ async function repl(agent: Agent, verbose: boolean): Promise<void> {
     rl.close()
   }
   if (verbose) console.log(color(DIM, 'bye'))
+}
+
+async function switchModel(session: SessionConfig, rl: ReturnType<typeof createInterface>, preset: string): Promise<void> {
+  let model: string
+  if (preset !== '') {
+    model = preset
+  } else {
+    console.log(color(DIM, `Discovering models from ${session.baseURL}/models ...`))
+    try {
+      const models = await listModels(session.baseURL, session.apiKey)
+      if (models.length === 0) throw new Error('provider returned no models')
+      console.log('Available models:')
+      for (const [index, id] of models.entries()) console.log(`  ${index + 1}. ${id}`)
+      const choice = (await rl.question('Pick a model number: ')).trim()
+      const index = Number(choice)
+      model = models[Number.isInteger(index) ? index - 1 : -1] ?? ''
+      if (!model) {
+        console.log(color(RED, 'Unknown model.'))
+        return
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      console.log(color(RED, `Could not list models (${reason}).`))
+      return
+    }
+  }
+
+  session.agent.setLLM(
+    new OpenAICompatibleLLM({ apiKey: session.apiKey, baseURL: session.baseURL, model }),
+  )
+  session.model = model
+  await saveGlobalConfig({ model }, globalConfigDir())
+  console.log(color(GREEN, `Switched to ${model}.`))
+}
+
+function printProviders(): void {
+  console.log('Provider presets (OpenAI-compatible endpoints):')
+  for (const [index, provider] of PROVIDERS.entries()) {
+    console.log(`  ${index + 1}. ${provider.label.padEnd(16)} ${provider.baseURL}`)
+  }
+  console.log(`  0. Custom — enter base URL and model yourself`)
+}
+
+async function pickModel(baseURL: string, apiKey: string, suggested: string, rl: ReturnType<typeof createInterface>): Promise<string> {
+  console.log(color(DIM, `Discovering models from ${baseURL}/models ...`))
+  try {
+    const models = await listModels(baseURL, apiKey)
+    if (models.length === 0) throw new Error('provider returned no models')
+    console.log('Available models:')
+    for (const [index, id] of models.entries()) {
+      console.log(`  ${index + 1}. ${id}`)
+    }
+    const choice = (await rl.question(`Pick a model number (default: ${suggested}): `)).trim()
+    if (choice === '') return suggested
+    const index = Number(choice)
+    const picked = models[Number.isInteger(index) ? index - 1 : -1]
+    if (!picked) throw new Error(`Unknown model "${choice}"`)
+    return picked
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    console.log(color(DIM, `Could not list models (${reason}); falling back to manual entry.`))
+    const entered = (await rl.question(`Model id (default: ${suggested}): `)).trim()
+    return entered === '' ? suggested : entered
+  }
+}
+
+async function setupFirstRun(force = false): Promise<HiAgentConfig | undefined> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return undefined
+  const dir = globalConfigDir()
+  const existing = await loadGlobalConfig(dir)
+  if (!force && existing.apiKey) return existing
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    console.log(color(CYAN, 'No provider configured yet. Let me set that up once (saved to your home dir, not the repo).'))
+    printProviders()
+
+    const choice = (await rl.question('Pick a provider number: ')).trim()
+    let baseURL: string
+    let suggested: string
+
+    if (choice === '0') {
+      baseURL = (await rl.question('Base URL (include /v1): ')).trim()
+      suggested = ''
+      if (!baseURL) {
+        console.log(color(RED, 'Setup cancelled: base URL is required.'))
+        return undefined
+      }
+    } else {
+      const index = Number(choice)
+      const provider = PROVIDERS[Number.isInteger(index) ? index - 1 : -1]
+      if (!provider) {
+        console.log(color(RED, `Unknown provider "${choice}".`))
+        return undefined
+      }
+      baseURL = provider.baseURL
+      suggested = provider.suggestedModel
+    }
+
+    const key = (await rl.question('API key: ')).trim()
+    if (!key) {
+      console.log(color(RED, 'Setup cancelled: API key is required.'))
+      return undefined
+    }
+
+    const model = await pickModel(baseURL, key, suggested, rl)
+    if (!model) {
+      console.log(color(RED, 'Setup cancelled: model is required.'))
+      return undefined
+    }
+
+    const saved: HiAgentConfig = { apiKey: key, baseURL, model }
+    await saveGlobalConfig(saved, dir)
+    console.log(color(DIM, `Saved to ${dir}/config.json (0600).`))
+    return saved
+  } finally {
+    rl.close()
+  }
 }
 
 async function main(): Promise<void> {
@@ -237,10 +368,26 @@ async function main(): Promise<void> {
     return
   }
 
-  const config = resolveConfig(options)
+  if (options.listProviders) {
+    printProviders()
+    return
+  }
+
+  const root = options.root ?? process.cwd()
+  const config = await resolveConfig(options, { root })
+
+  if (options.setup || !config.apiKey) {
+    const saved = await setupFirstRun(options.setup)
+    if (saved) {
+      config.apiKey = saved.apiKey
+      config.baseURL = saved.baseURL ?? config.baseURL
+      config.model = saved.model ?? config.model
+    }
+  }
+
   if (!config.apiKey) {
     console.error(color(RED, 'error: no API key found.'))
-    console.error('Set AGENT_API_KEY (or OPENAI_API_KEY / DEEPSEEK_API_KEY), or copy .env.example to .env.')
+    console.error('Set AGENT_API_KEY (or OPENAI_API_KEY / DEEPSEEK_API_KEY), or run `hi-agent --setup` to configure a provider.')
     console.error('To see the agent loop run without a key, try: npm run demo')
     process.exitCode = 1
     return
@@ -254,7 +401,7 @@ async function main(): Promise<void> {
       model: config.model,
     }),
     tools: createDefaultTools(),
-    root: options.root ?? process.cwd(),
+    root,
     maxSteps: options.maxSteps ?? 12,
     systemPrompt: options.systemPrompt,
     onEvent: (event) => renderEvent(event, verbose),
@@ -272,7 +419,14 @@ async function main(): Promise<void> {
     return
   }
 
-  await repl(agent, verbose)
+  await repl({
+    agent,
+    verbose,
+    baseURL: config.baseURL,
+    apiKey: config.apiKey,
+    model: config.model,
+    root,
+  })
 }
 
 void main()

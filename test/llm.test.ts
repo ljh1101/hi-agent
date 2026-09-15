@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { LLMError, OpenAICompatibleLLM } from '../src/llm.ts'
+import { backoffDelay, LLMError, OpenAICompatibleLLM, parseRetryAfter } from '../src/llm.ts'
 import type { ChatMessage, ToolDefinition } from '../src/types.ts'
 import { serveFakeProvider } from './helpers.ts'
 
@@ -194,6 +194,119 @@ test('tolerates a trailing slash in the base URL', async () => {
       const llm = new OpenAICompatibleLLM({ apiKey: 'k', baseURL: `${baseURL}/`, model: 'm' })
       await llm.chat([], [])
       assert.equal(captured[0]?.url, '/v1/chat/completions')
+    },
+  )
+})
+
+test('retries a 429 and succeeds on the next attempt', async () => {
+  await serveFakeProvider(
+    (_body, index) =>
+      index === 0
+        ? { status: 429, payload: { error: { message: 'rate limited' } } }
+        : { payload: { choices: [{ message: { content: 'recovered' } }] } },
+    async (baseURL, captured) => {
+      const llm = new OpenAICompatibleLLM({ apiKey: 'k', baseURL, model: 'm', baseDelayMs: 0 })
+      const reply = await llm.chat([{ role: 'user', content: 'hi' }], [])
+      assert.equal(reply.content, 'recovered')
+      assert.equal(captured.length, 2)
+    },
+  )
+})
+
+test('retries a 5xx, then gives up after maxRetries', async () => {
+  await serveFakeProvider(
+    () => ({ status: 503, payload: { error: { message: 'down' } } }),
+    async (baseURL, captured) => {
+      const llm = new OpenAICompatibleLLM({ apiKey: 'k', baseURL, model: 'm', maxRetries: 2, baseDelayMs: 0 })
+      await assert.rejects(() => llm.chat([{ role: 'user', content: 'hi' }], []), /HTTP 503/)
+      assert.equal(captured.length, 3)
+    },
+  )
+})
+
+test('does not retry a 401 (client error)', async () => {
+  await serveFakeProvider(
+    () => ({ status: 401, payload: { error: { message: 'bad key' } } }),
+    async (baseURL, captured) => {
+      const llm = new OpenAICompatibleLLM({ apiKey: 'bad', baseURL, model: 'm' })
+      await assert.rejects(() => llm.chat([{ role: 'user', content: 'hi' }], []), /HTTP 401/)
+      assert.equal(captured.length, 1)
+    },
+  )
+})
+
+test('honours a Retry-After header as a number of seconds', async () => {
+  await serveFakeProvider(
+    (_body, index) =>
+      index === 0
+        ? { status: 429, payload: { error: { message: 'slow down' } }, headers: { 'retry-after': '0' } }
+        : { payload: { choices: [{ message: { content: 'ok' } }] } },
+    async (baseURL, captured) => {
+      const llm = new OpenAICompatibleLLM({ apiKey: 'k', baseURL, model: 'm', baseDelayMs: 0 })
+      const reply = await llm.chat([{ role: 'user', content: 'hi' }], [])
+      assert.equal(reply.content, 'ok')
+      assert.equal(captured.length, 2)
+    },
+  )
+})
+
+test('backoffDelay grows exponentially and clamps to maxDelay', () => {
+  // Random pinned to 1.0 gives the ceiling exactly, so we can assert the curve.
+  const random = () => 1
+  const base = 100
+  const max = 1000
+
+  assert.equal(backoffDelay(0, base, max, random), 100)   // 100 * 2^0
+  assert.equal(backoffDelay(1, base, max, random), 200)   // 100 * 2^1
+  assert.equal(backoffDelay(2, base, max, random), 400)   // 100 * 2^2
+  assert.equal(backoffDelay(3, base, max, random), 800)   // 100 * 2^3
+  assert.equal(backoffDelay(4, base, max, random), 1000)  // clamped at max
+  assert.equal(backoffDelay(10, base, max, random), 1000) // stays clamped
+})
+
+test('backoffDelay stays within [0, ceiling) for a random source', () => {
+  const base = 50
+  const max = 400
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const ceiling = Math.min(max, base * 2 ** attempt)
+    for (let i = 0; i < 100; i++) {
+      const delay = backoffDelay(attempt, base, max)
+      assert.ok(delay >= 0 && delay < ceiling, `delay ${delay} outside [0, ${ceiling})`)
+    }
+  }
+})
+
+test('parseRetryAfter handles seconds, HTTP dates, and garbage', () => {
+  assert.equal(parseRetryAfter('3'), 3000)
+  assert.equal(parseRetryAfter('0'), 0)
+  assert.equal(parseRetryAfter(' 5 '), 5000)
+
+  const future = new Date(Date.now() + 1000).toUTCString()
+  assert.ok(parseRetryAfter(future) !== undefined && parseRetryAfter(future)! <= 1000)
+
+  assert.equal(parseRetryAfter('not-a-date'), undefined)
+  assert.equal(parseRetryAfter(null), undefined)
+  assert.equal(parseRetryAfter(''), undefined)
+})
+
+test('aborts the backoff delay when the external signal fires', async () => {
+  const controller = new AbortController()
+
+  let failCalls = 0
+  await serveFakeProvider(
+    () => {
+      failCalls++
+      // After replying 429, abort while the client is in its backoff sleep.
+      setTimeout(() => controller.abort(), 10)
+      return { status: 429, payload: { error: { message: 'busy' } } }
+    },
+    async (baseURL) => {
+      const llm = new OpenAICompatibleLLM({ apiKey: 'k', baseURL, model: 'm', baseDelayMs: 60_000 })
+      await assert.rejects(
+        () => llm.chat([{ role: 'user', content: 'hi' }], [], { signal: controller.signal }),
+      )
+      // Only one request went out: the retry was cancelled during the delay.
+      assert.equal(failCalls, 1)
     },
   )
 })

@@ -55,6 +55,7 @@ export interface FakeProviderResponse {
   payload?: unknown
   raw?: string
   delayMs?: number
+  headers?: Record<string, string>
 }
 
 /**
@@ -80,7 +81,7 @@ export async function serveFakeProvider(
       })
       const fake = responder(body, index)
       const send = (): void => {
-        response.writeHead(fake.status ?? 200, { 'content-type': 'application/json' })
+        response.writeHead(fake.status ?? 200, { 'content-type': 'application/json', ...fake.headers })
         response.end(fake.raw ?? JSON.stringify(fake.payload ?? {}))
       }
       if (fake.delayMs) setTimeout(send, fake.delayMs)

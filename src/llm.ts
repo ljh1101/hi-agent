@@ -15,6 +15,16 @@ export interface OpenAICompatibleOptions {
   temperature?: number
   maxTokens?: number
   timeoutMs?: number
+  /**
+   * Maximum retry attempts on top of the first try (so `2` means up to 3 total
+   * requests). Only retryable failures (429, 5xx, network/timeout) are retried.
+   * Defaults to 2, matching the OpenAI SDK.
+   */
+  maxRetries?: number
+  /** Base of the exponential backoff, in milliseconds. Defaults to 500. */
+  baseDelayMs?: number
+  /** Upper bound for the backoff delay, in milliseconds. Defaults to 30000. */
+  maxDelayMs?: number
   /** Injectable for tests. Defaults to global `fetch`. */
   fetch?: typeof globalThis.fetch
 }
@@ -23,12 +33,15 @@ export interface OpenAICompatibleOptions {
 export class LLMError extends Error {
   readonly status: number | undefined
   readonly body: string | undefined
+  /** Parsed from the `Retry-After` header, when the provider supplied one. */
+  readonly retryAfterMs: number | undefined
 
-  constructor(message: string, status?: number, body?: string) {
+  constructor(message: string, status?: number, body?: string, retryAfterMs?: number) {
     super(message)
     this.name = 'LLMError'
     this.status = status
     this.body = body
+    this.retryAfterMs = retryAfterMs
   }
 }
 
@@ -98,6 +111,9 @@ export class OpenAICompatibleLLM implements LLM {
   private readonly temperature: number | undefined
   private readonly maxTokens: number | undefined
   private readonly timeoutMs: number
+  private readonly maxRetries: number
+  private readonly baseDelayMs: number
+  private readonly maxDelayMs: number
   private readonly fetchImpl: typeof globalThis.fetch
 
   constructor(options: OpenAICompatibleOptions) {
@@ -110,6 +126,9 @@ export class OpenAICompatibleLLM implements LLM {
     this.temperature = options.temperature
     this.maxTokens = options.maxTokens
     this.timeoutMs = options.timeoutMs ?? 120_000
+    this.maxRetries = options.maxRetries ?? 2
+    this.baseDelayMs = options.baseDelayMs ?? 500
+    this.maxDelayMs = options.maxDelayMs ?? 30_000
     this.fetchImpl = options.fetch ?? globalThis.fetch
   }
 
@@ -136,7 +155,27 @@ export class OpenAICompatibleLLM implements LLM {
     if (this.temperature !== undefined) body.temperature = this.temperature
     if (this.maxTokens !== undefined) body.max_tokens = this.maxTokens
 
-    const signal = combineSignals(options.signal, AbortSignal.timeout(this.timeoutMs))
+    const attempts = this.maxRetries + 1
+    let lastError: unknown
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        return await this.request(body, options.signal)
+      } catch (error) {
+        lastError = error
+        if (!isRetryable(error) || attempt === attempts - 1) throw error
+        if (options.signal?.aborted) throw error
+        const retryAfterMs = (error as LLMError).retryAfterMs
+        const delay = retryAfterMs ?? backoffDelay(attempt, this.baseDelayMs, this.maxDelayMs)
+        await delayOrAbort(delay, options.signal)
+      }
+    }
+    // Unreachable, but keeps TypeScript's control-flow happy.
+    throw lastError
+  }
+
+  /** Issue the HTTP request once and normalize the reply. */
+  private async request(body: Record<string, unknown>, signal: AbortSignal | undefined): Promise<LLMResponse> {
+    const requestSignal = combineSignals(signal, AbortSignal.timeout(this.timeoutMs))
 
     let response: Response
     try {
@@ -147,10 +186,10 @@ export class OpenAICompatibleLLM implements LLM {
           authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(body),
-        signal,
+        signal: requestSignal,
       })
     } catch (error) {
-      if (options.signal?.aborted) throw error
+      if (signal?.aborted) throw error
       const reason = error instanceof Error ? error.message : String(error)
       throw new LLMError(`Request to ${this.endpoint} failed: ${reason}`)
     }
@@ -161,6 +200,7 @@ export class OpenAICompatibleLLM implements LLM {
         `Model request failed with HTTP ${response.status}: ${truncate(text, 500)}`,
         response.status,
         text,
+        parseRetryAfter(response.headers.get('retry-after')),
       )
     }
 
@@ -196,6 +236,60 @@ export class OpenAICompatibleLLM implements LLM {
 
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}...`
+}
+
+/**
+ * Whether a failure is worth retrying. 429 and 5xx are transient; 4xx
+ * (bad key, bad request) is the caller's mistake and will not improve on retry.
+ * Transport errors without a status (network, timeout) are retryable too.
+ */
+function isRetryable(error: unknown): boolean {
+  if (!(error instanceof LLMError)) return false
+  if (error.status === undefined) return true
+  return error.status === 429 || error.status >= 500
+}
+
+/**
+ * Exponential backoff with full jitter, clamped to `maxDelay`. The random
+ * source is injectable so tests can assert on deterministic bounds.
+ */
+export function backoffDelay(
+  attempt: number,
+  base: number,
+  max: number,
+  random: () => number = Math.random,
+): number {
+  const ceiling = Math.min(max, base * 2 ** attempt)
+  return Math.floor(random() * ceiling)
+}
+
+/** Parse a `Retry-After` header (seconds or HTTP date) into milliseconds. */
+export function parseRetryAfter(value: string | null, now: number = Date.now()): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  const date = Date.parse(value)
+  if (!Number.isNaN(date)) return Math.max(0, date - now)
+  return undefined
+}
+
+/** Sleep for `ms`, but abort early if the external signal fires. */
+function delayOrAbort(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'))
+      return
+    }
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'))
+      },
+      { once: true },
+    )
+  })
 }
 
 /** Combine an external abort signal with a timeout, without leaking listeners. */

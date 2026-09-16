@@ -2,11 +2,13 @@ import type {
   AgentEvent,
   ChatMessage,
   LLM,
+  LLMResponse,
   RunResult,
   StopReason,
   Tool,
   ToolCall,
   ToolContext,
+  ToolDefinition,
 } from './types.ts'
 import { ToolRegistry } from './tools/registry.ts'
 
@@ -36,6 +38,11 @@ export interface AgentOptions {
   signal?: AbortSignal
   /** Per-tool execution timeout. Defaults to 30s. */
   toolTimeoutMs?: number
+  /**
+   * Prefer `llm.stream()` when available, emitting `token` events as text
+   * arrives. Defaults to true; set to false to use `chat()` (non-streaming).
+   */
+  stream?: boolean
 }
 
 /**
@@ -60,6 +67,7 @@ export class Agent {
   private readonly toolTimeoutMs: number
   private readonly onEvent: ((event: AgentEvent) => void) | undefined
   private readonly signal: AbortSignal | undefined
+  private readonly stream: boolean
 
   constructor(options: AgentOptions) {
     this.llm = options.llm
@@ -69,6 +77,7 @@ export class Agent {
     this.toolTimeoutMs = options.toolTimeoutMs ?? 30_000
     this.onEvent = options.onEvent
     this.signal = options.signal
+    this.stream = options.stream ?? true
 
     const systemPrompt =
       options.systemPrompt === undefined ? DEFAULT_SYSTEM_PROMPT : options.systemPrompt
@@ -111,7 +120,7 @@ export class Agent {
       }
       this.emit({ type: 'step', step })
 
-      const reply = await this.llm.chat(this.history, definitions, { signal: this.signal })
+      const reply = await this.askModel(definitions)
       lastContent = reply.content ?? ''
       this.emit({ type: 'assistant', content: lastContent, toolCalls: reply.toolCalls })
 
@@ -143,6 +152,31 @@ export class Agent {
     this.emit({ type: 'max_steps', steps: this.maxSteps })
     const content = `Stopped after ${this.maxSteps} steps without a final answer. Last message: ${lastContent.trim() || '(none)'}`
     return this.finish(content, this.maxSteps, 'max_steps')
+  }
+
+  /**
+   * Ask the model for one reply. Prefers streaming when the LLM supports it,
+   * emitting `token` events as text arrives; otherwise falls back to `chat()`.
+   */
+  private async askModel(definitions: ToolDefinition[]): Promise<LLMResponse> {
+    if (this.stream && this.llm.stream) {
+      let content = ''
+      const toolCalls: ToolCall[] = []
+      let usage: LLMResponse['usage']
+      for await (const event of this.llm.stream(this.history, definitions, { signal: this.signal })) {
+        if (event.type === 'delta') {
+          content += event.delta
+          this.emit({ type: 'token', delta: event.delta })
+        } else if (event.type === 'tool_call') {
+          toolCalls.push(event.call)
+        } else {
+          content = event.content
+          usage = event.usage
+        }
+      }
+      return { content, toolCalls, usage }
+    }
+    return this.llm.chat(this.history, definitions, { signal: this.signal })
   }
 
   /**

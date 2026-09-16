@@ -19,6 +19,7 @@ interface CliOptions {
   root?: string
   setup: boolean
   listProviders: boolean
+  stream: boolean
   verbose: boolean
   help: boolean
 }
@@ -38,6 +39,8 @@ Options:
       --root <dir>         workspace root tools may touch (default: cwd)
       --setup              (re)run the interactive provider + key setup
       --list-providers     print the provider presets and exit
+  -s, --stream             stream the final answer token-by-token (default on)
+      --no-stream          disable streaming
   -v, --verbose            show model narration and full tool output
   -h, --help               show this help
 
@@ -55,7 +58,7 @@ Examples:
 `
 
 function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = { setup: false, listProviders: false, verbose: false, help: false }
+  const options: CliOptions = { setup: false, listProviders: false, stream: true, verbose: false, help: false }
   const positional: string[] = []
 
   for (let index = 0; index < argv.length; index++) {
@@ -73,6 +76,13 @@ function parseArgs(argv: string[]): CliOptions {
       case '-v':
       case '--verbose':
         options.verbose = true
+        break
+      case '-s':
+      case '--stream':
+        options.stream = true
+        break
+      case '--no-stream':
+        options.stream = false
         break
       case '--setup':
         options.setup = true
@@ -141,9 +151,13 @@ function oneLine(text: string, max = 100): string {
   return line.length > max ? `${line.slice(0, max)}...` : line
 }
 
+/** True once any token has streamed in the current step, so `final` skips re-printing. */
+let streamed = true
+
 function renderEvent(event: AgentEvent, verbose: boolean): void {
   switch (event.type) {
     case 'step':
+      streamed = false
       if (verbose) console.log(color(DIM, `[step ${event.step}]`))
       break
     case 'assistant':
@@ -163,10 +177,17 @@ function renderEvent(event: AgentEvent, verbose: boolean): void {
     case 'log':
       console.log(color(DIM, `[log] ${event.message}`))
       break
+    case 'token':
+      streamed = true
+      process.stdout.write(event.delta)
+      break
     case 'max_steps':
       console.log(color(RED, `stopped: hit the ${event.steps}-step limit`))
       break
     case 'final':
+      // When streaming, tokens already hit stdout; just finish the line.
+      // Otherwise print the whole answer here.
+      process.stdout.write(streamed ? '\n' : `\n${event.content}`)
       break
   }
 }
@@ -221,7 +242,7 @@ async function repl(session: SessionConfig): Promise<void> {
       }
       try {
         const result = await agent.run(input)
-        if (result.stopReason === 'final') console.log(`\n${result.content}`)
+        if (result.stopReason !== 'final') console.log()
       } catch (error) {
         printError(error)
       }
@@ -404,14 +425,14 @@ async function main(): Promise<void> {
     root,
     maxSteps: options.maxSteps ?? 12,
     systemPrompt: options.systemPrompt,
+    stream: options.stream,
     onEvent: (event) => renderEvent(event, verbose),
   })
 
   if (options.prompt !== undefined) {
     try {
       const result = await agent.run(options.prompt)
-      if (result.stopReason === 'final') console.log(`\n${result.content}`)
-      else process.exitCode = 1
+      if (result.stopReason !== 'final') process.exitCode = 1
     } catch (error) {
       printError(error)
       process.exitCode = 1

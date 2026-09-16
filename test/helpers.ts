@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createServer, type IncomingHttpHeaders } from 'node:http'
-import type { ChatMessage, LLM, LLMResponse, ToolCall, ToolDefinition } from '../src/types.ts'
+import type { ChatMessage, LLM, LLMResponse, StreamEvent, ToolCall, ToolDefinition } from '../src/types.ts'
 
 export interface RecordedRequest {
   messages: ChatMessage[]
@@ -40,6 +40,37 @@ export function toolCall(name: string, args: unknown, id = `call_${name}`): Tool
 /** Build a model reply. */
 export function reply(content: string | null, ...calls: ToolCall[]): LLMResponse {
   return { content, toolCalls: calls }
+}
+
+/**
+ * A streaming `LLM` for tests: replays fixed streams of `StreamEvent`. Each
+ * entry in the script is one full streaming turn.
+ */
+export class StreamingLLM implements LLM {
+  readonly model = 'streaming'
+  private readonly scripts: StreamEvent[][]
+
+  constructor(scripts: StreamEvent[][]) {
+    this.scripts = [...scripts]
+  }
+
+  async chat(): Promise<LLMResponse> {
+    throw new Error('StreamingLLM only supports stream()')
+  }
+
+  async *stream(): AsyncGenerator<StreamEvent, void> {
+    const script = this.scripts.shift()
+    if (!script) throw new Error('StreamingLLM ran out of scripted streams')
+    for (const event of script) yield event
+  }
+}
+
+/** Split text into per-character `delta` events followed by `done`. */
+export function streamText(text: string): StreamEvent[] {
+  return [
+    ...text.split('').map((delta) => ({ type: 'delta', delta }) as const),
+    { type: 'done', content: text, finishReason: 'stop' } as const,
+  ]
 }
 
 export interface CapturedRequest {

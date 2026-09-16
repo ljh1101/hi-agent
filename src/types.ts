@@ -60,6 +60,12 @@ export interface ChatOptions {
   signal?: AbortSignal
 }
 
+/** One chunk of a streaming reply, normalized across providers. */
+export type StreamEvent =
+  | { type: 'delta'; delta: string }
+  | { type: 'tool_call'; call: ToolCall }
+  | { type: 'done'; content: string; finishReason: string | null; usage?: LLMResponse['usage'] }
+
 /** Anything that can answer a conversation with text and/or tool calls. */
 export interface LLM {
   readonly model: string
@@ -68,6 +74,16 @@ export interface LLM {
     tools: ToolDefinition[],
     options?: ChatOptions,
   ): Promise<LLMResponse>
+  /**
+   * Optional streaming variant. Yields normalized chunks and ends with a
+   * `done` event carrying the fully accumulated content and tool calls, so the
+   * caller never has to parse SSE or reassemble deltas itself.
+   */
+  stream?(
+    messages: ChatMessage[],
+    tools: ToolDefinition[],
+    options?: ChatOptions,
+  ): AsyncGenerator<StreamEvent, void>
 }
 
 /** How a tool is advertised to the model. */
@@ -114,6 +130,8 @@ export type AgentEvent =
   | { type: 'max_steps'; steps: number }
   /** Free-form progress note from inside a tool. */
   | { type: 'log'; message: string }
+  /** A single text token from a streaming reply, for live UI rendering. */
+  | { type: 'token'; delta: string }
 
 /** Why the loop stopped. */
 export type StopReason = 'final' | 'max_steps' | 'aborted'

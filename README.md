@@ -183,8 +183,10 @@ console.log(result.content, result.stopReason, result.steps)
 await agent.run('And which file implements the tool registry?')
 ```
 
-`onEvent` emits `step`, `assistant`, `tool_call`, `tool_result`, `log`, `final`
-and `max_steps`. Stream them to a UI, or ignore them.
+`onEvent` emits `step`, `assistant`, `tool_call`, `tool_result`, `log`, `token`,
+`final` and `max_steps`. Set `stream: true` on the `Agent` (the default) to get
+`token` events as the model streams its reply; otherwise a single `final` event
+carries the whole answer. Stream them to a UI, or ignore them.
 
 ## Project layout
 
@@ -202,7 +204,7 @@ src/
     index.ts           the default toolset
   cli.ts               one-shot and interactive entry point
 examples/demo.ts       the loop running against a scripted model, offline
-test/                  48 tests: loop, parser, tools, config, wire format, end-to-end
+test/                  65 tests: loop, parser, tools, config, wire format, streaming, end-to-end
 ```
 
 ## Tests
@@ -227,9 +229,7 @@ genuinely gets written to disk.
 
 Everything below is an addition on top of the same loop, not a rewrite:
 
-- **Streaming** responses and token-by-token output.
 - **Parallel tool execution** (the loop runs tool calls sequentially today).
-- **Retries / backoff** for 429s and transient network errors.
 - **Context management**: summarization or truncation once history outgrows the
   context window.
 - **Approval gating** for dangerous tools, and a real shell tool behind it.

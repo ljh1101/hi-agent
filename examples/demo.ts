@@ -55,6 +55,9 @@ function render(event: AgentEvent): void {
     case 'log':
       console.log(`[log] ${event.message}`)
       break
+    case 'token':
+      process.stdout.write(event.delta)
+      break
   }
 }
 

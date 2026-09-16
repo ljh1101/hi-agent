@@ -24,6 +24,7 @@ export type {
   Role,
   RunResult,
   StopReason,
+  StreamEvent,
   Tool,
   ToolCall,
   ToolContext,

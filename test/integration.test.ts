@@ -68,6 +68,7 @@ test('multi-step run: tool call, observation, second tool call, final answer', a
           llm: new OpenAICompatibleLLM({ apiKey: 'test-key', baseURL, model: 'fake-model' }),
           tools: createDefaultTools(),
           root,
+          stream: false,
           onEvent: (event) => events.push(event),
         })
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { backoffDelay, LLMError, OpenAICompatibleLLM, parseRetryAfter } from '../src/llm.ts'
-import type { ChatMessage, ToolDefinition } from '../src/types.ts'
+import type { ChatMessage, StreamEvent, ToolDefinition } from '../src/types.ts'
 import { serveFakeProvider } from './helpers.ts'
 
 const calcTool: ToolDefinition = {
@@ -307,6 +307,86 @@ test('aborts the backoff delay when the external signal fires', async () => {
       )
       // Only one request went out: the retry was cancelled during the delay.
       assert.equal(failCalls, 1)
+    },
+  )
+})
+
+function sse(events: string[]): string {
+  return events.map((event) => `data: ${event}\n\n`).join('') + 'data: [DONE]\n\n'
+}
+
+test('streams content deltas, tool calls, and a final done event', async () => {
+  const raw = sse([
+    JSON.stringify({ choices: [{ delta: { role: 'assistant', content: 'The ' }, finish_reason: null }] }),
+    JSON.stringify({ choices: [{ delta: { content: 'answer' }, finish_reason: null }] }),
+    JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] }),
+  ])
+
+  await serveFakeProvider(
+    () => ({ raw }),
+    async (baseURL, captured) => {
+      const llm = new OpenAICompatibleLLM({ apiKey: 'k', baseURL, model: 'm' })
+      const events: StreamEvent[] = []
+      for await (const event of llm.stream!([{ role: 'user', content: 'hi' }], [])) {
+        events.push(event)
+      }
+
+      assert.equal(captured[0]?.body.stream, true)
+      assert.deepEqual(
+        events.filter((e) => e.type === 'delta').map((e) => (e.type === 'delta' ? e.delta : '')),
+        ['The ', 'answer'],
+      )
+      const done = events.at(-1)
+      assert.ok(done && done.type === 'done' && done.content === 'The answer')
+      assert.equal(done.finishReason, 'stop')
+    },
+  )
+})
+
+test('reassembles streamed tool call arguments across chunks', async () => {
+  const raw = sse([
+    JSON.stringify({
+      choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'calc', arguments: '{"expr' } }] }, finish_reason: null }],
+    }),
+    JSON.stringify({
+      choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'ession":"1+1"}' } }] }, finish_reason: null }],
+    }),
+    JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+  ])
+
+  await serveFakeProvider(
+    () => ({ raw }),
+    async (baseURL) => {
+      const llm = new OpenAICompatibleLLM({ apiKey: 'k', baseURL, model: 'm' })
+      const events: StreamEvent[] = []
+      for await (const event of llm.stream!([{ role: 'user', content: 'hi' }], [])) {
+        events.push(event)
+      }
+
+      const call = events.find((e): e is Extract<StreamEvent, { type: 'tool_call' }> => e.type === 'tool_call')
+      assert.ok(call)
+      assert.equal(call.call.name, 'calc')
+      assert.equal(call.call.id, 'call_1')
+      assert.equal(call.call.arguments, '{"expression":"1+1"}')
+    },
+  )
+})
+
+test('reports usage from the final streamed chunk', async () => {
+  const raw = sse([
+    JSON.stringify({ choices: [{ delta: { content: 'hi' }, finish_reason: null }] }),
+    JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } }),
+  ])
+
+  await serveFakeProvider(
+    () => ({ raw }),
+    async (baseURL) => {
+      const llm = new OpenAICompatibleLLM({ apiKey: 'k', baseURL, model: 'm' })
+      const events: StreamEvent[] = []
+      for await (const event of llm.stream!([{ role: 'user', content: 'hi' }], [])) events.push(event)
+
+      const done = events.at(-1)
+      assert.ok(done && done.type === 'done' && done.usage?.totalTokens === 3)
     },
   )
 })

@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { Agent, DEFAULT_SYSTEM_PROMPT } from '../src/agent.ts'
 import { calculatorTool } from '../src/tools/calculator.ts'
 import type { AgentEvent, Tool } from '../src/types.ts'
-import { ScriptedLLM, reply, toolCall } from './helpers.ts'
+import { ScriptedLLM, StreamingLLM, reply, streamText, toolCall } from './helpers.ts'
 
 const echoTool: Tool<{ text: string }> = {
   name: 'echo',
@@ -217,4 +217,38 @@ test('setLLM swaps the model mid-session without losing history', async () => {
 
   // History was preserved across the swap (system prompt + both user turns + answers).
   assert.equal(agent.history.filter((m) => m.role === 'user').length, 2)
+})
+
+test('streams tokens and returns the accumulated content', async () => {
+  const events: string[] = []
+  const llm = new StreamingLLM([streamText('hello')])
+  const agent = new Agent({
+    llm,
+    tools: [],
+    stream: true,
+    onEvent: (event) => {
+      if (event.type === 'token') events.push(event.delta)
+    },
+  })
+
+  const result = await agent.run('hi')
+  assert.equal(result.content, 'hello')
+  assert.equal(events.join(''), 'hello')
+  assert.equal(result.stopReason, 'final')
+})
+
+test('collects streamed tool calls and feeds observations back', async () => {
+  const llm = new StreamingLLM([
+    [
+      { type: 'done', content: '', finishReason: 'tool_calls' },
+      { type: 'tool_call', call: toolCall('echo', { text: 'hi' }, 'call_1') },
+    ],
+    streamText('echoed'),
+  ])
+  const agent = new Agent({ llm, tools: [echoTool], stream: true })
+
+  const result = await agent.run('go')
+  assert.equal(result.content, 'echoed')
+  const observation = agent.history.find((m) => m.role === 'tool')
+  assert.equal(observation?.content, 'echo: hi')
 })

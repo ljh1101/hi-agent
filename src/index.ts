@@ -14,6 +14,8 @@ export {
 export { LLMError, OpenAICompatibleLLM, type OpenAICompatibleOptions } from './llm.ts'
 export { PROVIDERS, findProvider, listModels, type ProviderPreset } from './providers.ts'
 export { ToolRegistry, createDefaultTools } from './tools/index.ts'
+export { editTool } from './tools/edit.ts'
+export { globTool, grepTool } from './tools/search.ts'
 export type {
   AgentEvent,
   ChatMessage,

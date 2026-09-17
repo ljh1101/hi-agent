@@ -8,6 +8,8 @@
 import './agent.test.ts'
 import './calculator.test.ts'
 import './config.test.ts'
+import './edit.test.ts'
 import './integration.test.ts'
 import './llm.test.ts'
+import './search.test.ts'
 import './tools.test.ts'

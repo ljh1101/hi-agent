@@ -118,8 +118,11 @@ it robust:
 | `calculator` | Exact arithmetic, parsed by a hand-written recursive-descent parser — no `eval` anywhere |
 | `current_time` | Current UTC + local time (the model otherwise has no clock) |
 | `list_dir` | Directory listing with `[dir]`/`[file]` markers and sizes |
-| `read_file` | Read a UTF-8 text file |
+| `read_file` | Read a UTF-8 text file, optionally a numbered line range (`offset`/`limit`) |
 | `write_file` | Create or overwrite a file, creating parent directories |
+| `edit` | Replace a unique text span in place (str-replace, like Claude Code's Edit) |
+| `glob` | Find files by path pattern (`**/*.ts`, `{a,b}`, `?`) |
+| `grep` | Search file contents by regex, returning `file:line` matches with optional context |
 
 Adding one is a single object:
 
@@ -200,11 +203,13 @@ src/
     registry.ts        name -> tool map, schema projection
     calculator.ts      recursive-descent expression parser
     filesystem.ts      read_file / write_file / list_dir + workspace confinement
+    search.ts          glob / grep (find files by name or content)
+    edit.ts            str-replace precise editing
     time.ts            current_time
     index.ts           the default toolset
   cli.ts               one-shot and interactive entry point
 examples/demo.ts       the loop running against a scripted model, offline
-test/                  65 tests: loop, parser, tools, config, wire format, streaming, end-to-end
+test/                  90 tests: loop, parser, tools, search, edit, config, streaming, end-to-end
 ```
 
 ## Tests

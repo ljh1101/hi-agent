@@ -98,3 +98,37 @@ test('current_time reports UTC and local time', async () => {
   assert.match(output, /ISO \(UTC\):\s+\d{4}-\d{2}-\d{2}T/)
   assert.match(output, /Timezone:\s+UTC[+-]\d{2}:\d{2}/)
 })
+
+test('read_file returns a line range with numbering', async () => {
+  const ctx = await makeRoot()
+  await writeFileTool.execute({ path: 'nums.txt', content: 'one\ntwo\nthree\nfour\nfive\n' }, ctx)
+
+  const range = await readFileTool.execute({ path: 'nums.txt', offset: 2, limit: 2 }, ctx)
+  assert.match(range, /lines 2-3 of 5/)
+  assert.match(range, /2: two/)
+  assert.match(range, /3: three/)
+  assert.doesNotMatch(range, /1: one/)
+  assert.doesNotMatch(range, /4: four/)
+})
+
+test('read_file clamps an out-of-range offset gracefully', async () => {
+  const ctx = await makeRoot()
+  await writeFileTool.execute({ path: 'a.txt', content: 'x\ny\n' }, ctx)
+
+  const result = await readFileTool.execute({ path: 'a.txt', offset: 99 }, ctx)
+  assert.match(result, /has 2 lines/)
+  assert.match(result, /out of range/)
+})
+
+test('read_file rejects a non-positive offset or limit', async () => {
+  const ctx = await makeRoot()
+  await writeFileTool.execute({ path: 'a.txt', content: 'x\n' }, ctx)
+  await assert.rejects(
+    async () => await readFileTool.execute({ path: 'a.txt', offset: 0 }, ctx),
+    /positive integer/,
+  )
+  await assert.rejects(
+    async () => await readFileTool.execute({ path: 'a.txt', limit: -1 }, ctx),
+    /positive integer/,
+  )
+})

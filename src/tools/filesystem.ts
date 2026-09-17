@@ -10,7 +10,7 @@ const MAX_READ_BYTES = 200_000
  * This is the agent's main safety boundary: the model can read and write inside
  * `ctx.root`, never outside it.
  */
-function resolveInsideRoot(target: string, ctx: ToolContext): string {
+export function resolveInsideRoot(target: string, ctx: ToolContext): string {
   if (typeof target !== 'string' || target.trim() === '') {
     throw new Error('"path" must be a non-empty string')
   }
@@ -23,9 +23,19 @@ function resolveInsideRoot(target: string, ctx: ToolContext): string {
 }
 
 /** Path shown to the model: relative to the root, POSIX separators. */
-function displayPath(absolute: string, ctx: ToolContext): string {
+export function displayPath(absolute: string, ctx: ToolContext): string {
   const relative = path.relative(ctx.root, absolute)
   return (relative === '' ? '.' : relative).split(path.sep).join('/')
+}
+
+/**
+ * Split text into lines, handling both `\n` and `\r\n`, and dropping the
+ * trailing empty element that a final newline produces.
+ */
+export function splitLines(text: string): string[] {
+  const lines = text.split(/\r?\n/)
+  if (lines.length > 0 && lines.at(-1) === '') lines.pop()
+  return lines
 }
 
 function describeError(error: unknown): string {
@@ -39,19 +49,23 @@ function describeError(error: unknown): string {
   return String(error)
 }
 
-export const readFileTool: Tool<{ path: string }> = {
+export const readFileTool: Tool<{ path: string; offset?: number; limit?: number }> = {
   name: 'read_file',
   description:
-    'Read a UTF-8 text file and return its contents. Paths are relative to the workspace root.',
+    'Read a UTF-8 text file and return its contents. Paths are relative to the workspace root. ' +
+    'Optionally read a line range: `offset` is the 1-based first line to return, ' +
+    '`limit` is the maximum number of lines. Lines are numbered in the output when a range is given.',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'File path, e.g. "src/agent.ts".' },
+      offset: { type: 'integer', description: '1-based first line to read.' },
+      limit: { type: 'integer', description: 'Maximum number of lines to read.' },
     },
     required: ['path'],
     additionalProperties: false,
   },
-  async execute({ path: target }, ctx) {
+  async execute({ path: target, offset, limit }, ctx) {
     const absolute = resolveInsideRoot(target, ctx)
     let content: string
     try {
@@ -65,7 +79,26 @@ export const readFileTool: Tool<{ path: string }> = {
       )
     }
     if (content === '') return `(${displayPath(absolute, ctx)} is empty)`
-    return content
+
+    if (offset === undefined && limit === undefined) return content
+
+    const lines = splitLines(content)
+    const start = offset === undefined ? 1 : offset
+    const end = limit === undefined ? lines.length : start + limit - 1
+    if (!Number.isInteger(start) || start < 1) {
+      throw new Error('"offset" must be a positive integer')
+    }
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+      throw new Error('"limit" must be a positive integer')
+    }
+    if (start > lines.length) {
+      return `(${displayPath(absolute, ctx)} has ${lines.length} lines; offset ${start} is out of range)`
+    }
+
+    const slice = lines.slice(start - 1, Math.min(end, lines.length))
+    const numbered = slice.map((line, index) => `${start + index}: ${line}`).join('\n')
+    const header = `${displayPath(absolute, ctx)} (lines ${start}-${start + slice.length - 1} of ${lines.length})`
+    return `${header}\n${numbered}`
   },
 }
 

@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import { Agent, DEFAULT_SYSTEM_PROMPT } from '../src/agent.ts'
 import { calculatorTool } from '../src/tools/calculator.ts'
-import type { AgentEvent, Tool } from '../src/types.ts'
+import type { AgentEvent, ChatMessage, ChatOptions, LLM, LLMResponse, StreamEvent, Tool, ToolDefinition } from '../src/types.ts'
 import { ScriptedLLM, StreamingLLM, reply, streamText, toolCall } from './helpers.ts'
 
 const echoTool: Tool<{ text: string }> = {
@@ -251,4 +251,26 @@ test('collects streamed tool calls and feeds observations back', async () => {
   assert.equal(result.content, 'echoed')
   const observation = agent.history.find((m) => m.role === 'tool')
   assert.equal(observation?.content, 'echo: hi')
+})
+
+test('a stream aborted mid-reply stops with reason "aborted", not "final"', async () => {
+  const controller = new AbortController()
+
+  // A streaming LLM that aborts the run right after the first delta.
+  const abortingLLM: LLM = {
+    model: 'aborting',
+    async chat(): Promise<LLMResponse> {
+      throw new Error('unused')
+    },
+    async *stream(): AsyncGenerator<StreamEvent, void> {
+      yield { type: 'delta', delta: 'hel' }
+      controller.abort()
+      yield { type: 'delta', delta: 'lo' }
+      yield { type: 'done', content: 'hello', finishReason: 'stop' }
+    },
+  }
+
+  const agent = new Agent({ llm: abortingLLM, tools: [], stream: true, signal: controller.signal })
+  const result = await agent.run('hi')
+  assert.equal(result.stopReason, 'aborted')
 })

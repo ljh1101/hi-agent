@@ -124,6 +124,11 @@ export class Agent {
       lastContent = reply.content ?? ''
       this.emit({ type: 'assistant', content: lastContent, toolCalls: reply.toolCalls })
 
+      // The stream may have been aborted mid-reply; treat it as a stop, not a final answer.
+      if (this.signal?.aborted) {
+        return this.finish(lastContent, step, 'aborted')
+      }
+
       this.history.push({
         role: 'assistant',
         content: lastContent,
@@ -163,16 +168,25 @@ export class Agent {
       let content = ''
       const toolCalls: ToolCall[] = []
       let usage: LLMResponse['usage']
-      for await (const event of this.llm.stream(this.history, definitions, { signal: this.signal })) {
-        if (event.type === 'delta') {
-          content += event.delta
-          this.emit({ type: 'token', delta: event.delta })
-        } else if (event.type === 'tool_call') {
-          toolCalls.push(event.call)
-        } else {
-          content = event.content
-          usage = event.usage
+      try {
+        for await (const event of this.llm.stream(this.history, definitions, { signal: this.signal })) {
+          if (event.type === 'delta') {
+            content += event.delta
+            this.emit({ type: 'token', delta: event.delta })
+          } else if (event.type === 'tool_call') {
+            toolCalls.push(event.call)
+          } else {
+            content = event.content
+            usage = event.usage
+          }
         }
+      } catch (error) {
+        // A mid-stream abort means the run is being cancelled; surface it as an
+        // aborted stop instead of a provider exception.
+        if (this.signal?.aborted) {
+          return { content, toolCalls, usage }
+        }
+        throw error
       }
       return { content, toolCalls, usage }
     }

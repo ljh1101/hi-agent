@@ -24,7 +24,7 @@ interface CliOptions {
   help: boolean
 }
 
-const HELP = `hi-agent - a minimal general-purpose agent
+const HELP = `hi-agent - a general-purpose agent
 
 Usage:
   hi-agent [options] [prompt]      run one turn and exit
@@ -395,7 +395,14 @@ async function main(): Promise<void> {
   }
 
   const root = options.root ?? process.cwd()
-  const config = await resolveConfig(options, { root })
+  let config
+  try {
+    config = await resolveConfig(options, { root })
+  } catch (error) {
+    console.error(color(RED, `error: ${error instanceof Error ? error.message : String(error)}`))
+    process.exitCode = 1
+    return
+  }
 
   if (options.setup || !config.apiKey) {
     const saved = await setupFirstRun(options.setup)

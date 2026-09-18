@@ -74,12 +74,17 @@ export async function listModels(
   baseURL: string,
   apiKey?: string,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  timeoutMs = 10_000,
 ): Promise<string[]> {
   const endpoint = `${baseURL.replace(/\/+$/, '')}/models`
   const headers: Record<string, string> = { accept: 'application/json' }
   if (apiKey) headers.authorization = `Bearer ${apiKey}`
 
-  const response = await fetchImpl(endpoint, { method: 'GET', headers })
+  const response = await fetchImpl(endpoint, {
+    method: 'GET',
+    headers,
+    signal: AbortSignal.timeout(timeoutMs),
+  })
   if (!response.ok) {
     throw new Error(`Failed to list models (HTTP ${response.status})`)
   }

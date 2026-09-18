@@ -106,6 +106,20 @@ test('resolveConfig falls back to DeepSeek defaults when only DEEPSEEK_API_KEY i
   assert.equal(config.model, 'deepseek-chat')
 })
 
+test('resolveConfig does not assume DeepSeek when a higher-precedence key is set', async () => {
+  const root = await makeRoot()
+  const dir = await makeRoot()
+  // AGENT_API_KEY wins as the key, so DeepSeek defaults must NOT kick in.
+  const config = await resolveConfig({}, {
+    root,
+    globalDir: dir,
+    env: { AGENT_API_KEY: 'openai-key', DEEPSEEK_API_KEY: 'ds-key' },
+  })
+  assert.equal(config.apiKey, 'openai-key')
+  assert.equal(config.baseURL, 'https://api.openai.com/v1')
+  assert.equal(config.model, 'gpt-4o-mini')
+})
+
 test('resolveConfig rejects a project config that is not valid JSON', async () => {
   const root = await makeRoot()
   const globalDir = await makeRoot()
@@ -162,4 +176,20 @@ test('listModels throws on a non-2xx or malformed response', async () => {
   const malformed = (async () =>
     new Response(JSON.stringify({ notData: true }), { status: 200 })) as typeof globalThis.fetch
   await assert.rejects(() => listModels('https://x/v1', 'sk', malformed), /Unexpected/)
+})
+
+test('listModels passes an abort signal so a hanging endpoint can be cancelled', async () => {
+  let seenSignal: AbortSignal | undefined
+  const hang = (async (_url: string, init?: RequestInit) => {
+    seenSignal = init?.signal as AbortSignal | undefined
+    return new Promise<Response>(() => {})
+  }) as typeof globalThis.fetch
+
+  // The promise never settles, but we only check the signal was wired up.
+  const pending = listModels('https://x/v1', 'sk', hang, 50)
+  assert.ok(seenSignal, 'an abort signal should be passed to fetch')
+  seenSignal!.addEventListener('abort', () => seenSignal!.reason, { once: true })
+  // Assert the timeout signal is active before we abandon the pending request.
+  assert.ok(!seenSignal!.aborted)
+  pending.catch(() => {})
 })

@@ -138,7 +138,10 @@ export async function resolveConfig(
   const project = await loadProjectConfig(options.root)
   const global = await loadGlobalConfig(options.globalDir)
 
-  const deepSeek = !env.OPENAI_API_KEY && Boolean(env.DEEPSEEK_API_KEY)
+  // DeepSeek defaults only apply when the *chosen* key is specifically
+  // DEEPSEEK_API_KEY — i.e. no higher-precedence key is set.
+  const deepSeek =
+    !env.AGENT_API_KEY && !env.OPENAI_API_KEY && Boolean(env.DEEPSEEK_API_KEY)
 
   const apiKey = firstDefined(
     override.apiKey,

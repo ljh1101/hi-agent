@@ -2,10 +2,18 @@
 import { createInterface } from 'node:readline/promises'
 import process from 'node:process'
 import { Agent } from './agent.ts'
-import { globalConfigDir, loadGlobalConfig, resolveConfig, saveGlobalConfig } from './config.ts'
+import {
+  globalConfigDir,
+  loadGlobalConfig,
+  loadProjectConfig,
+  resolveConfig,
+  saveGlobalConfig,
+} from './config.ts'
 import type { HiAgentConfig } from './config.ts'
+import { derivePrefixRule, matchesPrefix, parseRules, type PermissionRules } from './permissions.ts'
 import { LLMError, OpenAICompatibleLLM } from './llm.ts'
 import { listModels, PROVIDERS } from './providers.ts'
+import { splitSubcommands } from './command-parse.ts'
 import { createDefaultTools } from './tools/index.ts'
 import type { AgentEvent } from './types.ts'
 
@@ -19,6 +27,7 @@ interface CliOptions {
   root?: string
   setup: boolean
   listProviders: boolean
+  yes: boolean
   stream: boolean
   verbose: boolean
   help: boolean
@@ -39,6 +48,7 @@ Options:
       --root <dir>         workspace root tools may touch (default: cwd)
       --setup              (re)run the interactive provider + key setup
       --list-providers     print the provider presets and exit
+      --yes                auto-approve every tool action (dangerous: no confirmations)
   -s, --stream             stream the final answer token-by-token (default on)
       --no-stream          disable streaming
   -v, --verbose            show model narration and full tool output
@@ -58,7 +68,7 @@ Examples:
 `
 
 function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = { setup: false, listProviders: false, stream: true, verbose: false, help: false }
+  const options: CliOptions = { setup: false, listProviders: false, yes: false, stream: true, verbose: false, help: false }
   const positional: string[] = []
 
   for (let index = 0; index < argv.length; index++) {
@@ -89,6 +99,10 @@ function parseArgs(argv: string[]): CliOptions {
         break
       case '--list-providers':
         options.listProviders = true
+        break
+      case '--yes':
+      case '-y':
+        options.yes = true
         break
       case '-m':
       case '--model':
@@ -207,6 +221,39 @@ function printError(error: unknown): void {
   console.error(color(RED, `error: ${error instanceof Error ? error.message : String(error)}`))
 }
 
+/** Ask the user to approve a risky action on the terminal. */
+function makeApprover(
+  rl: ReturnType<typeof createInterface> | undefined,
+  session: { remembered: Set<string> },
+): (request: string, command?: string) => Promise<boolean> {
+  return async (request: string, command?: string) => {
+    if (!rl || !process.stdin.isTTY) return false
+
+    // Session memory: any remembered prefix rule approves without asking.
+    if (command) {
+      const parts = splitSubcommands(command)
+      const approved = parts.every(
+        (part) => session.remembered.size > 0 && [...session.remembered].some((rule) => matchesPrefix(part, rule)),
+      )
+      if (approved && parts.length > 0) return true
+    }
+
+    console.log(color(CYAN, `\n[approval] ${request}`))
+    const answer = (await rl.question('Allow? [y]es / [a]lways this session / [n]o: '))
+      .trim()
+      .toLowerCase()
+
+    if (answer === 'a' || answer === 'always') {
+      if (command) {
+        const rule = derivePrefixRule(command)
+        if (rule) session.remembered.add(rule)
+      }
+      return true
+    }
+    return answer === 'y' || answer === 'yes'
+  }
+}
+
 interface SessionConfig {
   agent: Agent
   verbose: boolean
@@ -216,9 +263,12 @@ interface SessionConfig {
   root: string
 }
 
-async function repl(session: SessionConfig): Promise<void> {
+async function repl(session: SessionConfig & { yes?: boolean }): Promise<void> {
   const { agent, verbose } = session
   const rl = createInterface({ input: process.stdin, output: process.stdout })
+  if (!session.yes) {
+    agent.setApprover(makeApprover(rl, { remembered: new Set<string>() }))
+  }
   console.log('hi-agent interactive mode. Commands: /reset, /model, exit. Ctrl+C quits.')
   try {
     for (;;) {
@@ -422,13 +472,28 @@ async function main(): Promise<void> {
   }
 
   const verbose = options.verbose
+
+  // Merge persistent permission rules: project config wins over global config.
+  let rules: PermissionRules = { allow: [], deny: [] }
+  try {
+    const [projectConfig, globalConfig] = await Promise.all([
+      loadProjectConfig(root),
+      loadGlobalConfig(),
+    ])
+    rules = mergeRules(projectConfig.permissions, globalConfig.permissions)
+  } catch {
+    // A broken permissions section only loses the convenience rules.
+  }
+
+  const approvalSession = { remembered: new Set<string>() }
+
   const agent = new Agent({
     llm: new OpenAICompatibleLLM({
       apiKey: config.apiKey,
       baseURL: config.baseURL,
       model: config.model,
     }),
-    tools: createDefaultTools(),
+    tools: createDefaultTools({ rules }),
     root,
     maxSteps: options.maxSteps ?? 12,
     systemPrompt: options.systemPrompt,
@@ -436,7 +501,26 @@ async function main(): Promise<void> {
     onEvent: (event) => renderEvent(event, verbose),
   })
 
+  if (options.yes) {
+    // Auto-approve everything (--yes): for trusted containers/CI only.
+    agent.setApprover(async () => true)
+  }
+
   if (options.prompt !== undefined) {
+    if (process.stdin.isTTY && !options.yes) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout })
+      agent.setApprover(makeApprover(rl, approvalSession))
+      try {
+        const result = await agent.run(options.prompt)
+        if (result.stopReason !== 'final') process.exitCode = 1
+      } catch (error) {
+        printError(error)
+        process.exitCode = 1
+      } finally {
+        rl.close()
+      }
+      return
+    }
     try {
       const result = await agent.run(options.prompt)
       if (result.stopReason !== 'final') process.exitCode = 1
@@ -454,7 +538,17 @@ async function main(): Promise<void> {
     apiKey: config.apiKey,
     model: config.model,
     root,
+    yes: options.yes,
   })
+}
+
+/** Merge project and global permission rules; project wins on conflict. */
+function mergeRules(project: PermissionRules | undefined, global: PermissionRules | undefined): PermissionRules {
+  const p = project ?? parseRules(undefined)
+  const g = global ?? parseRules(undefined)
+  const mergedAllow = [...g.allow.filter((rule) => !p.deny.includes(rule)), ...p.allow]
+  const mergedDeny = [...g.deny.filter((rule) => !p.allow.includes(rule)), ...p.deny]
+  return { allow: [...new Set(mergedAllow)], deny: [...new Set(mergedDeny)] }
 }
 
 void main()

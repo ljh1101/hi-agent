@@ -122,6 +122,7 @@ it robust:
 | `edit` | Replace a unique text span in place (str-replace, like Claude Code's Edit) |
 | `glob` | Find files by path pattern (`**/*.ts`, `{a,b}`, `?`) |
 | `grep` | Search file contents by regex, returning `file:line` matches with optional context |
+| `shell` | Execute a shell command (cross-platform), gated by a read-only command whitelist + approval |
 
 Adding one is a single object:
 
@@ -156,6 +157,18 @@ An agent that can touch the filesystem needs a boundary:
   and a whitelist of math functions.
 - **Bounded cost.** `--max-steps` caps the number of model round-trips per turn,
   every model request has a 120s timeout, every tool a 30s timeout.
+- **Approval gate.** The `shell` tool runs a built-in read-only whitelist
+  (`ls`, `cat`, `grep`, `git status`, ...) without asking; anything else —
+  including compound commands with a risky part, file redirections, and command
+  substitution — goes through a three-layer permission system:
+  1. **Session memory**: answer `a` at a prompt and that command prefix never
+     asks again this session.
+  2. **Persistent rules**: `hi-agent.json` supports
+     `"permissions": { "allow": ["npm run *"], "deny": ["git push *"] }`
+     (deny wins; team-shareable via git, edited by hand).
+  3. **The approver prompt** for everything else — `y`/`a`/`n`. Without an
+     approver configured (library use), risky commands are denied by default;
+     `--yes` auto-approves everything for trusted containers/CI.
 - **Errors over crashes.** Failures are reported to the model as observations.
 
 ## Using it as a library

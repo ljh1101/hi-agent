@@ -12,6 +12,14 @@ export {
   type ResolvedConfig,
 } from './config.ts'
 export { LLMError, OpenAICompatibleLLM, type OpenAICompatibleOptions } from './llm.ts'
+export {
+  derivePrefixRule,
+  evaluate,
+  matchesPrefix,
+  parseRules,
+  type PermissionDecision,
+  type PermissionRules,
+} from './permissions.ts'
 export { PROVIDERS, findProvider, listModels, type ProviderPreset } from './providers.ts'
 export { ToolRegistry, createDefaultTools } from './tools/index.ts'
 export { editTool } from './tools/edit.ts'

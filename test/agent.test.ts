@@ -274,3 +274,46 @@ test('a stream aborted mid-reply stops with reason "aborted", not "final"', asyn
   const result = await agent.run('hi')
   assert.equal(result.stopReason, 'aborted')
 })
+
+test('passes the approver into a tool via ToolContext', async () => {
+  const approving = async () => true
+  let received: ((request: string) => Promise<boolean>) | undefined
+
+  const captureTool: Tool<Record<string, never>> = {
+    name: 'capture',
+    description: 'Captures the approve hook.',
+    parameters: { type: 'object', properties: {}, required: [] },
+    async execute(_args, ctx) {
+      received = ctx.approve
+      return 'captured'
+    },
+  }
+
+  const llm = new ScriptedLLM([reply(null, toolCall('capture', {})), reply('done')])
+  const agent = new Agent({ llm, tools: [captureTool], approver: approving })
+  await agent.run('go')
+
+  assert.equal(received, approving)
+})
+
+test('a denied risky action becomes an observation, not a crash', async () => {
+  const riskyTool: Tool<Record<string, never>> = {
+    name: 'risky',
+    description: 'Asks for approval.',
+    parameters: { type: 'object', properties: {}, required: [] },
+    permission: 'dangerous',
+    async execute(_args, ctx) {
+      const ok = await ctx.approve?.('do the risky thing')
+      if (!ok) throw new Error('denied')
+      return 'ran'
+    },
+  }
+
+  const llm = new ScriptedLLM([reply(null, toolCall('risky', {})), reply('understood')])
+  const agent = new Agent({ llm, tools: [riskyTool], approver: async () => false })
+  const result = await agent.run('go')
+
+  assert.equal(result.content, 'understood')
+  const observation = agent.history.find((m) => m.role === 'tool')
+  assert.equal(observation?.content, 'Error: denied')
+})

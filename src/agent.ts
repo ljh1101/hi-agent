@@ -39,6 +39,13 @@ export interface AgentOptions {
   /** Per-tool execution timeout. Defaults to 30s. */
   toolTimeoutMs?: number
   /**
+   * Approval hook for risky tool executions. When provided, tools with a
+   * `permission` of `write` or `dangerous` call it (via `ToolContext.approve`)
+   * and a `false` result turns into an observation, not a crash. Tools that
+   * never ask (e.g. `read`) run without approval regardless.
+   */
+  approver?: (request: string, command?: string) => Promise<boolean>
+  /**
    * Prefer `llm.stream()` when available, emitting `token` events as text
    * arrives. Defaults to true; set to false to use `chat()` (non-streaming).
    */
@@ -68,6 +75,7 @@ export class Agent {
   private readonly onEvent: ((event: AgentEvent) => void) | undefined
   private readonly signal: AbortSignal | undefined
   private readonly stream: boolean
+  private approver: ((request: string, command?: string) => Promise<boolean>) | undefined
 
   constructor(options: AgentOptions) {
     this.llm = options.llm
@@ -78,6 +86,7 @@ export class Agent {
     this.onEvent = options.onEvent
     this.signal = options.signal
     this.stream = options.stream ?? true
+    this.approver = options.approver
 
     const systemPrompt =
       options.systemPrompt === undefined ? DEFAULT_SYSTEM_PROMPT : options.systemPrompt
@@ -103,6 +112,11 @@ export class Agent {
   /** Swap the model/provider mid-session without losing the conversation. */
   setLLM(llm: LLM): void {
     this.llm = llm
+  }
+
+  /** Attach or replace the approval hook for risky tool executions. */
+  setApprover(approver: (request: string, command?: string) => Promise<boolean>): void {
+    this.approver = approver
   }
 
   /**
@@ -229,6 +243,7 @@ export class Agent {
       root: this.root,
       ...(this.signal ? { signal: this.signal } : {}),
       log: (message: string) => this.emit({ type: 'log', message }),
+      ...(this.approver ? { approve: this.approver } : {}),
     }
 
     try {

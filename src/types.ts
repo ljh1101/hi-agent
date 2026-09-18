@@ -99,7 +99,17 @@ export interface ToolContext {
   signal?: AbortSignal
   /** Progress sink; goes to the CLI, never to the model. */
   log: (message: string) => void
+  /**
+   * Ask the user to approve a risky action. Resolves `true` to proceed, `false`
+   * to deny. Only present when the agent was constructed with an `approver`.
+   * The second argument carries the raw command (when the request is about a
+   * shell command) so the approver can remember prefixes.
+   */
+  approve?: (request: string, command?: string) => Promise<boolean>
 }
+
+/** Risk level of a tool, driving the approval gate. */
+export type ToolPermission = 'read' | 'write' | 'dangerous'
 
 /** A tool returns text; an observation is always text from the model's view. */
 export type ToolResult = string
@@ -116,6 +126,8 @@ export interface Tool<Args = Record<string, unknown>> extends ToolDefinition {
    * can declare a larger budget here.
    */
   timeoutMs?: number
+  /** Risk level. `read` tools run without approval; others may gate on it. */
+  permission?: ToolPermission
 }
 
 /** Progress events emitted by the agent loop, for UIs and logging. */

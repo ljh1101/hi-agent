@@ -16,11 +16,14 @@
 import { homedir } from 'node:os'
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { parseRules, type PermissionRules } from './permissions.ts'
 
 export interface HiAgentConfig {
   apiKey?: string
   baseURL?: string
   model?: string
+  /** Shell permission rules: `allow` prefixes run without asking, `deny` always reject. */
+  permissions?: PermissionRules
 }
 
 export interface ConfigOverride {
@@ -72,7 +75,11 @@ function parseConfigFile(text: string, source: string): HiAgentConfig {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`Config file ${source} must contain a JSON object`)
   }
-  return parsed as HiAgentConfig
+  const config = parsed as HiAgentConfig
+  if (config.permissions !== undefined) {
+    config.permissions = parseRules(config.permissions)
+  }
+  return config
 }
 
 async function readConfigFile(file: string): Promise<HiAgentConfig> {

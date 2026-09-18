@@ -1,12 +1,11 @@
 # hi-agent
 
-A minimal, general-purpose tool-using agent in TypeScript.
+A general-purpose tool-using agent in TypeScript.
 
-This is an **MVP of the core**: an LLM-driven loop that can call tools, read the
-results, and keep going until it can answer. It has **zero runtime
-dependencies**, runs on plain `node`, and the core four files (`types.ts`,
-`agent.ts`, `llm.ts`, `tools/registry.ts`) are about 620 lines — small enough to
-read in one sitting.
+This is an LLM-driven loop that can call tools, read the results, and keep
+going until it can answer. It runs on plain `node`, and the core four files
+(`types.ts`, `agent.ts`, `llm.ts`, `tools/registry.ts`) are small enough to read
+in one sitting.
 
 ```console
 $ hi-agent "What is (23 * 17) + 9, and what is in the src/ directory?"
@@ -148,7 +147,7 @@ Then pass it in: `new Agent({ llm, tools: [...createDefaultTools(), wordCountToo
 
 ## Safety model
 
-An agent that can touch the filesystem needs a boundary. The MVP has one:
+An agent that can touch the filesystem needs a boundary:
 
 - **Workspace confinement.** File tools resolve relative to `--root` (the
   working directory by default) and refuse any path that escapes it, including
@@ -158,10 +157,6 @@ An agent that can touch the filesystem needs a boundary. The MVP has one:
 - **Bounded cost.** `--max-steps` caps the number of model round-trips per turn,
   every model request has a 120s timeout, every tool a 30s timeout.
 - **Errors over crashes.** Failures are reported to the model as observations.
-
-There is deliberately **no shell/exec tool** in the MVP: it is the one capability
-that turns "reads the wrong file" into "deletes the wrong thing". Add it behind
-an explicit opt-in flag when you need it.
 
 ## Using it as a library
 
@@ -197,7 +192,7 @@ carries the whole answer. Stream them to a UI, or ignore them.
 src/
   types.ts             the whole contract: ChatMessage, LLM, Tool, events (~130 lines)
   agent.ts             the loop, history management, tool execution, error recovery
-  llm.ts               OpenAI-compatible client over fetch (no SDK)
+  llm.ts               OpenAI-compatible client + retry/backoff + SSE streaming
   config.ts            global vs project config loading + secret resolution
   tools/
     registry.ts        name -> tool map, schema projection
@@ -230,14 +225,15 @@ genuinely gets written to disk.
 > spawns one child per file, which sandboxed environments sometimes block; use
 > `npm run test:isolated` when you want the standard isolated behaviour.
 
-## What this MVP deliberately leaves out
+## Roadmap
 
 Everything below is an addition on top of the same loop, not a rewrite:
 
+- **Shell/exec tool** with approval gating for dangerous commands.
 - **Parallel tool execution** (the loop runs tool calls sequentially today).
 - **Context management**: summarization or truncation once history outgrows the
   context window.
-- **Approval gating** for dangerous tools, and a real shell tool behind it.
+- **Approval gating** for dangerous tools.
 - **Persistence**: saving/resuming sessions, and long-term memory.
 - **Multi-agent**: sub-agents, planners, or an MCP client.
 

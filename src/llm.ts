@@ -165,8 +165,8 @@ async function* parseSSE(response: Response): AsyncGenerator<WireStreamChunk, vo
 /**
  * Client for any OpenAI-compatible `/chat/completions` endpoint.
  *
- * Zero runtime dependencies: it uses the global `fetch` built into Node 18+.
- * Works with OpenAI, DeepSeek, Moonshot, Groq, Ollama, vLLM, LM Studio, ...
+ * Uses the global `fetch` built into Node 18+. Works with OpenAI, DeepSeek,
+ * Moonshot, Groq, Ollama, vLLM, LM Studio, ...
  */
 export class OpenAICompatibleLLM implements LLM {
   readonly model: string

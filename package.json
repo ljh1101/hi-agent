@@ -2,7 +2,7 @@
   "name": "hi-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "A minimal, general-purpose tool-using agent in TypeScript",
+  "description": "A general-purpose tool-using agent in TypeScript",
   "type": "module",
   "bin": {
     "hi-agent": "./dist/cli.js"

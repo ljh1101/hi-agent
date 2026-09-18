@@ -1,9 +1,8 @@
 /**
  * Core, provider-agnostic types for the agent.
  *
- * Everything here is deliberately small: a conversation is a list of
- * `ChatMessage`, the model is anything that implements `LLM`, and the model's
- * capabilities are `Tool`s.
+ * A conversation is a list of `ChatMessage`, the model is anything that
+ * implements `LLM`, and the model's capabilities are `Tool`s.
  */
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool'

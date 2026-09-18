@@ -234,7 +234,7 @@ export class Agent {
     try {
       const result = await withTimeout(
         Promise.resolve(tool.execute(parsedArgs as Record<string, unknown>, ctx)),
-        this.toolTimeoutMs,
+        tool.timeoutMs ?? this.toolTimeoutMs,
         tool.name,
       )
       return this.observeTool(call, result, false, startedAt)

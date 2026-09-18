@@ -16,6 +16,7 @@ export { PROVIDERS, findProvider, listModels, type ProviderPreset } from './prov
 export { ToolRegistry, createDefaultTools } from './tools/index.ts'
 export { editTool } from './tools/edit.ts'
 export { globTool, grepTool } from './tools/search.ts'
+export { shellTool } from './tools/shell.ts'
 export type {
   AgentEvent,
   ChatMessage,

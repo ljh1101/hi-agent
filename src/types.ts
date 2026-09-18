@@ -110,6 +110,12 @@ export interface Tool<Args = Record<string, unknown>> extends ToolDefinition {
    * into an observation so the model can correct itself.
    */
   execute(args: Args, ctx: ToolContext): Promise<ToolResult> | ToolResult
+  /**
+   * Per-tool execution timeout override, in milliseconds. Defaults to the
+   * agent's `toolTimeoutMs` when unset. Tools like `shell` that may run long
+   * can declare a larger budget here.
+   */
+  timeoutMs?: number
 }
 
 /** Progress events emitted by the agent loop, for UIs and logging. */

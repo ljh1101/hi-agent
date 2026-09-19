@@ -155,11 +155,18 @@ test('grep honours .gitignore nested directory names', async () => {
   assert.doesNotMatch(result, /tmp/)
 })
 
-test('search does not follow symlinked directories', async () => {
+test('search does not follow symlinked directories', async (t) => {
   const ctx = await makeRoot()
   await seed(ctx)
   await put(ctx, 'loop/inside.txt', 'needleInLoop\n')
-  await symlink(path.join(ctx.root, 'loop'), path.join(ctx.root, 'src', 'looplink'), 'dir')
+  try {
+    await symlink(path.join(ctx.root, 'loop'), path.join(ctx.root, 'src', 'looplink'), 'dir')
+  } catch {
+    // Windows needs developer mode or admin rights to create a symlink, and
+    // some sandboxes refuse it outright; the fixture cannot exist, so skip.
+    t.skip('cannot create symlinks in this environment')
+    return
+  }
 
   const result = await grepTool.execute({ pattern: 'needleInLoop' }, ctx)
   // The real directory is found, but never the path reached through the symlink.

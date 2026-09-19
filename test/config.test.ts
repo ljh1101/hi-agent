@@ -43,8 +43,12 @@ test('saveGlobalConfig writes 0600 and preserves existing keys', async () => {
   assert.equal(second.model, 'm1')
   assert.equal(second.baseURL, 'https://example.com/v1')
 
-  const mode = (await stat(path.join(dir, 'config.json'))).mode & 0o777
-  assert.equal(mode, 0o600)
+  // POSIX permission bits only exist on POSIX: Windows reports 0o666 for every
+  // writable file, so the assertion would fail for reasons unrelated to config.
+  if (process.platform !== 'win32') {
+    const mode = (await stat(path.join(dir, 'config.json'))).mode & 0o777
+    assert.equal(mode, 0o600)
+  }
 })
 
 test('loadGlobalConfig returns an empty object when the file is absent', async () => {

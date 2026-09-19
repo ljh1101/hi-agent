@@ -222,7 +222,7 @@ src/
     index.ts           the default toolset
   cli.ts               one-shot and interactive entry point
 examples/demo.ts       the loop running against a scripted model, offline
-test/                  suites: loop, parser, tools, search, edit, shell, config, streaming, end-to-end
+test/                  suites: loop, parser, tools, search, edit, line endings, shell, permissions, config, streaming, end-to-end
 ```
 
 ## Tests
@@ -242,6 +242,23 @@ genuinely gets written to disk.
 > `npm test` imports the suites into a single process. `node --test` normally
 > spawns one child per file, which sandboxed environments sometimes block; use
 > `npm run test:isolated` when you want the standard isolated behaviour.
+
+## Line endings
+
+The model can only emit LF: `\r` cannot survive a tool-call argument, and the
+read tools strip it. So the tools own line endings on the model's behalf.
+
+- `read_file` and `grep` always present LF, for CRLF and LF files alike. With a
+  line range, `read_file` marks a CRLF file in its header (`..., CRLF`).
+- `edit` matches `old_string` in LF space and then restores the file's own
+  ending, so editing a CRLF file does not rewrite its untouched lines.
+- `write_file` keeps the ending of the file it overwrites; new files are LF.
+- Detection is purity-based (CRLF only when *every* newline is `\r\n`), so one
+  stray `\r\n` cannot reclassify an LF file and turn a small edit into a
+  whole-file diff.
+- Normalization only rewrites `\r\n`. A lone `\r` (classic Mac line ending) is
+  not a recognized separator: it is passed through as ordinary text and never
+  rewritten.
 
 ## Roadmap
 

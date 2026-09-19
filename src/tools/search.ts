@@ -264,7 +264,6 @@ export const grepTool: Tool<{
     }
 
     // Drop a trailing separator.
-    // Drop a trailing separator.
     if (results.at(-1) === '--') results.pop()
 
     if (results.length === 0) return `No matches for /${pattern}/.`

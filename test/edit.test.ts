@@ -76,3 +76,54 @@ test('edit refuses to escape the workspace root', async () => {
     /outside the workspace root/,
   )
 })
+
+// The model cannot emit `\r` inside tool arguments, so every multi-line
+// `old_string` arrives with LF separators even for a CRLF file.
+test('edit matches a multi-line old_string with LF in a CRLF file', async () => {
+  const ctx = await makeRoot()
+  await put(ctx, 'f.txt', 'alpha\r\nbeta\r\ngamma\r\n')
+
+  const result = await editTool.execute(
+    { path: 'f.txt', old_string: 'alpha\nbeta', new_string: 'alpha\nBETA' },
+    ctx,
+  )
+  assert.match(result, /1 replacement/)
+  assert.equal(await readFile(path.join(ctx.root, 'f.txt'), 'utf8'), 'alpha\r\nBETA\r\ngamma\r\n')
+})
+
+test('edit preserves the CRLF line endings of the file it edits', async () => {
+  const ctx = await makeRoot()
+  await put(ctx, 'f.txt', 'one\r\ntwo\r\nthree\r\n')
+  await editTool.execute({ path: 'f.txt', old_string: 'two', new_string: 'TWO' }, ctx)
+
+  const content = await readFile(path.join(ctx.root, 'f.txt'), 'utf8')
+  assert.equal(content, 'one\r\nTWO\r\nthree\r\n')
+  // A single-line edit must not rewrite the endings of the untouched lines.
+  assert.equal((content.match(/\r\n/g) ?? []).length, 3)
+})
+
+test('edit keeps a trailing newline and reports a CRLF mismatch hint', async () => {
+  const ctx = await makeRoot()
+  await put(ctx, 'f.txt', 'alpha\r\nbeta\r\n')
+  await editTool.execute({ path: 'f.txt', old_string: 'alpha', new_string: 'ALPHA' }, ctx)
+  assert.equal(await readFile(path.join(ctx.root, 'f.txt'), 'utf8'), 'ALPHA\r\nbeta\r\n')
+
+  await assert.rejects(
+    async () =>
+      await editTool.execute(
+        { path: 'f.txt', old_string: 'alpha\r\nbeta', new_string: 'x' },
+        ctx,
+      ),
+    /CRLF line endings/,
+  )
+})
+
+test('edit does not rewrite an LF file when the model sends CRLF', async () => {
+  const ctx = await makeRoot()
+  await put(ctx, 'f.txt', 'alpha\nbeta\n')
+  await editTool.execute(
+    { path: 'f.txt', old_string: 'alpha\r\nbeta', new_string: 'alpha\r\nBETA' },
+    ctx,
+  )
+  assert.equal(await readFile(path.join(ctx.root, 'f.txt'), 'utf8'), 'alpha\nBETA\n')
+})

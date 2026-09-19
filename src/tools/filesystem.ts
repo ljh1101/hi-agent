@@ -4,6 +4,45 @@ import type { Tool, ToolContext } from '../types.ts'
 
 const MAX_READ_BYTES = 200_000
 
+/** Line ending a file uses on disk. */
+export type LineEnding = '\n' | '\r\n'
+
+/**
+ * Detect the line ending a file uses, so a write can restore it.
+ *
+ * Purity-based on purpose: a single stray `\r\n` inside an otherwise LF file
+ * must not reclassify the whole file as CRLF, or one edited line turns into a
+ * whole-file rewrite (and a destroyed git blame). A file counts as CRLF only
+ * when *every* newline is part of a `\r\n` pair.
+ *
+ * Lone `\r` (classic Mac) is not treated as a line ending: it is read as
+ * ordinary text, so it is never rewritten in a form the model cannot see.
+ */
+export function detectLineEnding(content: string): LineEnding {
+  let crlf = 0
+  let lf = 0
+  for (let index = 0; index < content.length; index++) {
+    if (content.charCodeAt(index) !== 10) continue
+    if (index > 0 && content.charCodeAt(index - 1) === 13) crlf++
+    else lf++
+  }
+  return crlf > 0 && lf === 0 ? '\r\n' : '\n'
+}
+
+/**
+ * Normalize to LF. This is the only line-ending form the model ever sees,
+ * because it cannot emit `\r` inside tool arguments in the first place.
+ */
+export function normalizeLineEndings(text: string): string {
+  return text.replace(/\r\n/g, '\n')
+}
+
+/** Rewrite LF separators to `eol`; `\n` is a no-op. */
+export function applyLineEnding(text: string, eol: LineEnding): string {
+  if (eol === '\n') return text
+  return text.replace(/\n/g, '\r\n')
+}
+
 /**
  * Resolve a user/model supplied path and refuse to leave the workspace root.
  *
@@ -67,12 +106,16 @@ export const readFileTool: Tool<{ path: string; offset?: number; limit?: number 
   },
   async execute({ path: target, offset, limit }, ctx) {
     const absolute = resolveInsideRoot(target, ctx)
-    let content: string
+    let raw: string
     try {
-      content = await readFile(absolute, 'utf8')
+      raw = await readFile(absolute, 'utf8')
     } catch (error) {
       throw new Error(`Cannot read "${target}": ${describeError(error)}`)
     }
+    // The model never sees `\r`: it cannot produce one in an edit, so exposing
+    // it would only create text it cannot reproduce.
+    const eol = detectLineEnding(raw)
+    const content = normalizeLineEndings(raw)
     if (Buffer.byteLength(content) > MAX_READ_BYTES) {
       throw new Error(
         `File "${target}" is larger than ${MAX_READ_BYTES} bytes; read a smaller part instead.`,
@@ -97,7 +140,8 @@ export const readFileTool: Tool<{ path: string; offset?: number; limit?: number 
 
     const slice = lines.slice(start - 1, Math.min(end, lines.length))
     const numbered = slice.map((line, index) => `${start + index}: ${line}`).join('\n')
-    const header = `${displayPath(absolute, ctx)} (lines ${start}-${start + slice.length - 1} of ${lines.length})`
+    const style = eol === '\r\n' ? ', CRLF' : ''
+    const header = `${displayPath(absolute, ctx)} (lines ${start}-${start + slice.length - 1} of ${lines.length}${style})`
     return `${header}\n${numbered}`
   },
 }
@@ -118,13 +162,24 @@ export const writeFileTool: Tool<{ path: string; content: string }> = {
   async execute({ path: target, content }, ctx) {
     if (typeof content !== 'string') throw new Error('"content" must be a string')
     const absolute = resolveInsideRoot(target, ctx)
+
+    // An overwrite keeps the line ending the file already had, so rewriting a
+    // CRLF file does not turn it into a whole-file diff. New files use LF.
+    let eol: LineEnding = '\n'
+    try {
+      eol = detectLineEnding(await readFile(absolute, 'utf8'))
+    } catch {
+      eol = '\n'
+    }
+    const payload = applyLineEnding(normalizeLineEndings(content), eol)
+
     try {
       await mkdir(path.dirname(absolute), { recursive: true })
-      await writeFile(absolute, content, 'utf8')
+      await writeFile(absolute, payload, 'utf8')
     } catch (error) {
       throw new Error(`Cannot write "${target}": ${describeError(error)}`)
     }
-    return `Wrote ${Buffer.byteLength(content)} bytes to ${displayPath(absolute, ctx)}.`
+    return `Wrote ${Buffer.byteLength(payload)} bytes to ${displayPath(absolute, ctx)}.`
   },
 }
 

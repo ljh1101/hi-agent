@@ -1,6 +1,12 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import type { Tool } from '../types.ts'
-import { displayPath, resolveInsideRoot } from './filesystem.ts'
+import {
+  applyLineEnding,
+  detectLineEnding,
+  displayPath,
+  normalizeLineEndings,
+  resolveInsideRoot,
+} from './filesystem.ts'
 
 /**
  * `edit`: exact-string replacement in a file.
@@ -44,16 +50,27 @@ export const editTool: Tool<{ path: string; old_string: string; new_string: stri
     }
 
     const absolute = resolveInsideRoot(target, ctx)
-    let content: string
+    let raw: string
     try {
-      content = await readFile(absolute, 'utf8')
+      raw = await readFile(absolute, 'utf8')
     } catch (error) {
       throw new Error(`Cannot edit "${target}": ${describeError(error)}`)
     }
 
-    const occurrences = countOccurrences(content, old_string)
+    // Match in LF space and restore the file's own ending on write. The model
+    // cannot emit `\r` in tool arguments, so a byte-wise comparison against a
+    // CRLF file could never succeed for a multi-line `old_string`.
+    const eol = detectLineEnding(raw)
+    const content = normalizeLineEndings(raw)
+    const needle = normalizeLineEndings(old_string)
+
+    const occurrences = countOccurrences(content, needle)
     if (occurrences === 0) {
-      throw new Error(`"old_string" was not found in "${target}"`)
+      const hint =
+        eol === '\r\n' && old_string.includes('\r')
+          ? ' The file uses CRLF line endings, but "old_string" contains CR; use plain LF.'
+          : ''
+      throw new Error(`"old_string" was not found in "${target}".${hint}`)
     }
     if (occurrences > 1) {
       throw new Error(
@@ -61,7 +78,8 @@ export const editTool: Tool<{ path: string; old_string: string; new_string: stri
       )
     }
 
-    const updated = content.replace(old_string, new_string)
+    const replaced = content.replace(needle, normalizeLineEndings(new_string))
+    const updated = applyLineEnding(replaced, eol)
     try {
       await writeFile(absolute, updated, 'utf8')
     } catch (error) {

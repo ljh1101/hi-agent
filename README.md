@@ -207,17 +207,22 @@ src/
   agent.ts             the loop, history management, tool execution, error recovery
   llm.ts               OpenAI-compatible client + retry/backoff + SSE streaming
   config.ts            global vs project config loading + secret resolution
+  providers.ts         provider presets + `/models` discovery
+  permissions.ts       shell prefix permission rules (allow / deny, deny wins)
+  command-parse.ts     shell command splitting + leading-word extraction
+  index.ts             the library's public surface (re-exports)
   tools/
     registry.ts        name -> tool map, schema projection
     calculator.ts      recursive-descent expression parser
     filesystem.ts      read_file / write_file / list_dir + workspace confinement
     search.ts          glob / grep (find files by name or content)
     edit.ts            str-replace precise editing
+    shell.ts           shell execution: read-only whitelist, rules, process-tree kill
     time.ts            current_time
     index.ts           the default toolset
   cli.ts               one-shot and interactive entry point
 examples/demo.ts       the loop running against a scripted model, offline
-test/                  90 tests: loop, parser, tools, search, edit, config, streaming, end-to-end
+test/                  suites: loop, parser, tools, search, edit, shell, config, streaming, end-to-end
 ```
 
 ## Tests
@@ -242,11 +247,9 @@ genuinely gets written to disk.
 
 Everything below is an addition on top of the same loop, not a rewrite:
 
-- **Shell/exec tool** with approval gating for dangerous commands.
 - **Parallel tool execution** (the loop runs tool calls sequentially today).
 - **Context management**: summarization or truncation once history outgrows the
   context window.
-- **Approval gating** for dangerous tools.
 - **Persistence**: saving/resuming sessions, and long-term memory.
 - **Multi-agent**: sub-agents, planners, or an MCP client.
 

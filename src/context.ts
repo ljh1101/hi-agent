@@ -111,3 +111,73 @@ export function pruneMiddle(text: string, options: ResolvedContextOptions): stri
   const tail = text.slice(text.length - options.pruneTailChars)
   return `${head}${PRUNE_MARKER(text.length - keep)}${tail}`
 }
+
+// ---------------------------------------------------------------------------
+// Token accounting
+// ---------------------------------------------------------------------------
+
+export interface TokenUsage {
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+}
+
+/**
+ * Rough per-message token estimate: characters / 4. Conservative by design
+ * (overestimates for most languages), same heuristic pi and opencode use.
+ */
+export function estimateTokens(message: ChatMessage): number {
+  let chars = message.content?.length ?? 0
+  if (message.tool_calls) {
+    for (const call of message.tool_calls) {
+      chars += call.name.length + call.arguments.length
+    }
+  }
+  return Math.ceil(chars / 4)
+}
+
+export interface ContextUsage {
+  /** Best estimate of the tokens the next request will carry. */
+  tokens: number
+  /** True when the estimate is grounded in a real usage report. */
+  hasUsageBasis: boolean
+}
+
+/**
+ * Estimate the context size of a message list using the hybrid strategy:
+ * the last message with a real usage report anchors the count, and anything
+ * after it is estimated with chars/4. Without any usage, everything is
+ * estimated. This mirrors pi's `estimateContextTokens`.
+ *
+ * `usages` maps a message index to the usage the provider reported for the
+ * request that ended at that assistant message.
+ */
+export function contextUsage(
+  messages: readonly ChatMessage[],
+  usages: ReadonlyMap<number, TokenUsage>,
+): ContextUsage {
+  let anchorIndex = -1
+  let anchorTokens = 0
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const usage = usages.get(index)
+    if (usage && (usage.totalTokens ?? 0) > 0) {
+      // totalTokens covers the whole request that produced this message:
+      // everything before it plus the message itself.
+      anchorIndex = index
+      anchorTokens = usage.totalTokens ?? 0
+      break
+    }
+  }
+
+  if (anchorIndex === -1) {
+    let total = 0
+    for (const message of messages) total += estimateTokens(message)
+    return { tokens: total, hasUsageBasis: false }
+  }
+
+  let trailing = 0
+  for (let index = anchorIndex + 1; index < messages.length; index++) {
+    trailing += estimateTokens(messages[index]!)
+  }
+  return { tokens: anchorTokens + trailing, hasUsageBasis: true }
+}

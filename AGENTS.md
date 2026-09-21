@@ -90,6 +90,8 @@ These rules are the project's soul. Do not "optimize" them away:
   `serveFakeProvider`) — no real API keys or network.
 - Scratch dirs in tests use the `.tmp-*` prefix (gitignored).
 - Never commit unless the user asks.
+- **Never push unless the user explicitly asks for a push.** A request to
+  commit is not a request to push.
 
 ## Git
 
@@ -97,7 +99,8 @@ These rules are the project's soul. Do not "optimize" them away:
 - Stage explicit paths (`git add <path>`); never `git add -A` or `git add .`.
 - Before committing, run `git status` and verify you are only staging your files.
 - Commit messages are Chinese, concise, verb-first (`新增...`, `修复...`).
-- Never run `git reset --hard`, `git clean -fd`, `git stash`, or force-push.
+- Never run `git reset --hard`, `git clean -fd`, `git stash`, or force-push
+  (unless the user explicitly asks for a force-push).
 
 ## User Override
 

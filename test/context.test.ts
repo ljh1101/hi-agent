@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { pruneMiddle, projectHistory, resolveContextOptions } from '../src/context.ts'
+import {
+  contextUsage,
+  estimateTokens,
+  pruneMiddle,
+  projectHistory,
+  resolveContextOptions,
+} from '../src/context.ts'
 import type { ChatMessage } from '../src/types.ts'
 
 const opts = resolveContextOptions()
@@ -163,4 +169,57 @@ test('custom budgets are honoured', () => {
   assert.ok(pruned.startsWith('a'.repeat(10)))
   assert.ok(pruned.endsWith('a'.repeat(5)))
   assert.match(pruned, /485 characters pruned/)
+})
+
+// ---------------------------------------------------------------------------
+// Token accounting (stage 2)
+// ---------------------------------------------------------------------------
+
+test('estimateTokens uses chars/4 including tool call payloads', () => {
+  const plain: ChatMessage = { role: 'user', content: 'a'.repeat(400) }
+  assert.equal(estimateTokens(plain), 100)
+
+  const withCalls: ChatMessage = {
+    role: 'assistant',
+    content: null,
+    tool_calls: [{ id: '1', name: 'shell', arguments: 'b'.repeat(200) }],
+  }
+  // 5 (name) + 200 (args) = 205 chars -> 52 tokens
+  assert.equal(estimateTokens(withCalls), 52)
+})
+
+test('contextUsage anchors on the last reported usage and estimates the tail', () => {
+  const messages: ChatMessage[] = [
+    user('a'.repeat(4000)), // 1000 est
+    assistant('b'.repeat(2000)), // 500 est
+    user('c'.repeat(4000)), // 1000 est
+    assistant('d'.repeat(2000)), // 500 est
+    user('e'.repeat(4000)), // 1000 est
+  ]
+  // Usage reported for the request that produced messages[3].
+  const usages = new Map([[3, { totalTokens: 10_000 }]])
+
+  const usage = contextUsage(messages, usages)
+  assert.equal(usage.hasUsageBasis, true)
+  // 10000 (anchor) + estimate of messages[4] (1000) = 11000
+  assert.equal(usage.tokens, 11_000)
+})
+
+test('contextUsage estimates everything when no usage is known', () => {
+  const messages: ChatMessage[] = [
+    user('a'.repeat(4000)),
+    assistant('b'.repeat(2000)),
+    user('c'.repeat(4000)),
+  ]
+  const usage = contextUsage(messages, new Map())
+  assert.equal(usage.hasUsageBasis, false)
+  assert.equal(usage.tokens, 1000 + 500 + 1000)
+})
+
+test('contextUsage ignores zero or missing totals in the usage map', () => {
+  const messages: ChatMessage[] = [user('a'.repeat(4000)), assistant('b'.repeat(2000))]
+  const usages = new Map([[1, { totalTokens: 0 }]])
+  const usage = contextUsage(messages, usages)
+  assert.equal(usage.hasUsageBasis, false)
+  assert.equal(usage.tokens, 1500)
 })

@@ -152,10 +152,12 @@ test('emits progress events in order', async () => {
 
   assert.deepEqual(types, [
     'step',
+    'context_usage',
     'assistant',
     'tool_call',
     'tool_result',
     'step',
+    'context_usage',
     'assistant',
     'final',
   ])
@@ -340,4 +342,29 @@ test('the model sees pruned tool results while history keeps full fidelity', asy
 
   // ...while the stored history keeps everything.
   assert.match(agent.history.find((m) => m.role === 'tool')?.content ?? '', /echo: /)
+})
+
+test('emits context_usage grounded in reported usage once available', async () => {
+  const llm = new ScriptedLLM([
+    { ...reply('first'), usage: { promptTokens: 900, completionTokens: 100, totalTokens: 1000 } },
+    reply('second'),
+  ])
+  const seen: number[] = []
+  const agent = new Agent({
+    llm,
+    tools: [],
+    onEvent: (event) => {
+      if (event.type === 'context_usage') seen.push(event.tokens)
+    },
+  })
+
+  await agent.run('go') // step 1: no usage yet (estimated)
+  await agent.run('again') // step 2: anchored on step 1's usage
+
+  // Step 2's estimate = 1000 (reported) + tail estimate of the 2nd user msg.
+  assert.equal(seen.length, 2)
+  assert.ok(seen[0]! > 0, 'first estimate is chars/4 based')
+  assert.ok(seen[1]! >= 1000, 'second estimate is anchored on reported usage')
+  // After the final reply is appended, the running estimate only grows.
+  assert.ok(agent.estimateContextTokens() >= seen[1]!)
 })

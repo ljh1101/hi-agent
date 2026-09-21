@@ -165,6 +165,11 @@ function oneLine(text: string, max = 100): string {
   return line.length > max ? `${line.slice(0, max)}...` : line
 }
 
+function formatTokens(tokens: number): string {
+  if (tokens >= 1000) return `${Math.round(tokens / 1000)}k`
+  return String(tokens)
+}
+
 /** True once any token has streamed in the current step, so `final` skips re-printing. */
 let streamed = true
 
@@ -173,6 +178,11 @@ function renderEvent(event: AgentEvent, verbose: boolean): void {
     case 'step':
       streamed = false
       if (verbose) console.log(color(DIM, `[step ${event.step}]`))
+      break
+    case 'context_usage':
+      if (verbose) {
+        console.log(color(DIM, `[context ~${formatTokens(event.tokens)} tokens]`))
+      }
       break
     case 'assistant':
       if (verbose && event.content.trim() !== '') {

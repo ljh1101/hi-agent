@@ -11,7 +11,12 @@ import type {
   ToolDefinition,
 } from './types.ts'
 import { ToolRegistry } from './tools/registry.ts'
-import { projectHistory, resolveContextOptions, type ContextOptions } from './context.ts'
+import {
+  contextUsage,
+  projectHistory,
+  resolveContextOptions,
+  type ContextOptions,
+} from './context.ts'
 
 export const DEFAULT_SYSTEM_PROMPT = [
   'You are hi-agent, a general-purpose assistant that solves tasks by calling tools.',
@@ -83,6 +88,8 @@ export class Agent {
   private readonly signal: AbortSignal | undefined
   private readonly stream: boolean
   private readonly contextOptions: ReturnType<typeof resolveContextOptions>
+  /** Provider-reported usage, anchored at the assistant message it produced. */
+  private readonly usages = new Map<number, { totalTokens?: number }>()
   private approver: ((request: string, command?: string) => Promise<boolean>) | undefined
 
   constructor(options: AgentOptions) {
@@ -116,6 +123,12 @@ export class Agent {
     const systemMessages = this.history.filter((message) => message.role === 'system')
     this.history.length = 0
     this.history.push(...systemMessages)
+    this.usages.clear()
+  }
+
+  /** Current context-size estimate (tokens) for the next request. */
+  estimateContextTokens(): number {
+    return contextUsage(projectHistory(this.history, this.contextOptions), this.usages).tokens
   }
 
   /** Swap the model/provider mid-session without losing the conversation. */
@@ -142,6 +155,7 @@ export class Agent {
         return this.finish(lastContent, step - 1, 'aborted')
       }
       this.emit({ type: 'step', step })
+      this.emit({ type: 'context_usage', tokens: this.estimateContextTokens() })
 
       const reply = await this.askModel(definitions)
       lastContent = reply.content ?? ''
@@ -157,6 +171,11 @@ export class Agent {
         content: lastContent,
         ...(reply.toolCalls.length > 0 ? { tool_calls: reply.toolCalls } : {}),
       })
+      // Anchor the provider-reported usage at this assistant message: the
+      // request that produced it covered the whole history up to here.
+      if (reply.usage?.totalTokens) {
+        this.usages.set(this.history.length - 1, reply.usage)
+      }
 
       if (reply.toolCalls.length === 0) {
         const content = lastContent.trim()

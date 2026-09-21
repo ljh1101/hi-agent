@@ -149,6 +149,11 @@ export type AgentEvent =
   | { type: 'log'; message: string }
   /** A single text token from a streaming reply, for live UI rendering. */
   | { type: 'token'; delta: string }
+  /**
+   * Estimated context size before a model request, using the last reported
+   * usage plus a chars/4 estimate for messages after it. Emitted every step.
+   */
+  | { type: 'context_usage'; tokens: number }
 
 /** Why the loop stopped. */
 export type StopReason = 'final' | 'max_steps' | 'aborted'

@@ -317,3 +317,27 @@ test('a denied risky action becomes an observation, not a crash', async () => {
   const observation = agent.history.find((m) => m.role === 'tool')
   assert.equal(observation?.content, 'Error: denied')
 })
+
+test('the model sees pruned tool results while history keeps full fidelity', async () => {
+  const bigOutput = 'y'.repeat(5000)
+  const budgets = { pruneThresholdChars: 100, pruneHeadChars: 10, pruneTailChars: 10, protectedTurns: 1 }
+
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('echo', { text: bigOutput })), // turn 1: big tool result
+    reply('ok'),
+    reply('second answer'), // turn 2: no tools
+  ])
+  const agent = new Agent({ llm, tools: [echoTool], contextOptions: budgets })
+
+  await agent.run('go') // turn 1 (tool call + result)
+  await agent.run('again') // turn 2 — turn 1's tool result is now old
+
+  // The turn-2 request shows the turn-1 tool result pruned...
+  const turnTwoRequest = llm.requests[llm.requests.length - 1]!
+  const toolInView = turnTwoRequest.messages.find((m) => m.role === 'tool')
+  assert.match(toolInView?.content ?? '', /characters pruned/)
+  assert.ok((toolInView?.content ?? '').length < 100)
+
+  // ...while the stored history keeps everything.
+  assert.match(agent.history.find((m) => m.role === 'tool')?.content ?? '', /echo: /)
+})

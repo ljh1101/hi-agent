@@ -14,6 +14,9 @@ Hard constraints — violating any of these is a regression:
   `resolveInsideRoot` and refuse to escape the workspace root.
 - **No bundler, no `tsx`.** Source runs directly on Node >= 22.18 via built-in
   type stripping. Imports must carry the real `.ts` extension.
+- **Shell approval chain.** The shell tool evaluates commands through:
+  read-only whitelist → persistent rules (deny wins) → approver. The stored
+  history is never pruned in place; only the request projection is.
 
 ## Conversational Style
 
@@ -31,22 +34,28 @@ Hard constraints — violating any of these is a regression:
 | `src/types.ts` | The contract: `ChatMessage`, `LLM`, `Tool`, events | Shared by everything; changing it ripples everywhere |
 | `src/agent.ts` | The loop, history, tool execution, error recovery | Do not add business logic here |
 | `src/llm.ts` | OpenAI-compatible client + retry/backoff + SSE streaming | Swap providers by editing this file only |
+| `src/context.ts` | Request projection: old tool results pruned | History is the source of truth; the model only ever sees a projection |
 | `src/config.ts` | Config layering (CLI > env > project > global) | Secrets resolve here, never in the loop |
 | `src/providers.ts` | Provider presets + `/models` listing | |
-| `src/tools/*` | Tool set (registry, calculator, filesystem, search, edit, time) | Each tool is one object |
-| `src/cli.ts` | Entry point, arg parsing, interactive REPL | |
+| `src/permissions.ts` | Shell prefix rules (allow / deny, deny wins) | |
+| `src/command-parse.ts` | Shell command splitting + leading-word extraction | Quoting-aware; shared by shell and permissions |
+| `src/tools/*` | Tool set (registry, calculator, filesystem, search, edit, shell, time) | Each tool is one object |
+| `src/cli.ts` | Entry point, arg parsing, interactive REPL, approval prompts | |
 
 ## Design Principles
 
-These three rules are the project's soul. Do not "optimize" them away:
+These rules are the project's soul. Do not "optimize" them away:
 
 1. **Tool failures are data, not crashes.** Bad JSON, unknown tools, thrown
    errors and timeouts all become `Error: ...` observations fed back to the
    model. The loop only throws on *provider* failures (auth, HTTP, network).
-2. **The model is just an interface.** `LLM` has one method. Swapping providers
-   means changing `src/llm.ts`, never the loop.
+2. **The model is just an interface.** `LLM` has `chat` plus an optional
+   `stream`. Swapping providers means changing `src/llm.ts`, never the loop.
 3. **Tools are just objects.** A tool is a name + description + JSON Schema +
    `execute`. There is no plugin system.
+4. **History is truth, requests are projections.** `agent.history` keeps full
+   fidelity (base for persistence/rewind). Everything the model sees goes
+   through `projectHistory`; never mutate stored messages.
 
 ## Code Quality
 
@@ -57,13 +66,17 @@ These three rules are the project's soul. Do not "optimize" them away:
   `namespace`, parameter properties, or `import =`. Imports use `.ts` extensions.
 - No inline imports (`await import()`, dynamic type imports).
 - **Always ask before removing functionality or code that appears intentional.**
-  Unimplemented capabilities (shell, persistence, parallel execution) are on the
-  roadmap, not gaps to fill silently — propose before adding.
+  Unimplemented capabilities (context compaction via LLM summary, persistence,
+  parallel execution, sub-agents, MCP) are on the roadmap, not gaps to fill
+  silently — propose before adding.
 
 ## Safety Boundaries
 
 - Every filesystem tool must resolve paths through `resolveInsideRoot` and refuse
   to escape the workspace root (including `..` traversal).
+- The shell tool's read-only whitelist is security-sensitive: any change to
+  `isReadOnlyCommand` needs adversarial test cases (compound commands, pipes,
+  redirections, command substitution) in `test/shell.test.ts`.
 - New tools with side effects should be reviewed for a permission level before
   being added to `createDefaultTools()`.
 

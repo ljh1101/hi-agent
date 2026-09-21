@@ -8,6 +8,7 @@
 import './agent.test.ts'
 import './calculator.test.ts'
 import './config.test.ts'
+import './context.test.ts'
 import './edit.test.ts'
 import './eol.test.ts'
 import './integration.test.ts'

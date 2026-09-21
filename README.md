@@ -206,6 +206,7 @@ src/
   types.ts             the whole contract: ChatMessage, LLM, Tool, events (~130 lines)
   agent.ts             the loop, history management, tool execution, error recovery
   llm.ts               OpenAI-compatible client + retry/backoff + SSE streaming
+  context.ts           request projection: old tool results pruned, history untouched
   config.ts            global vs project config loading + secret resolution
   providers.ts         provider presets + `/models` discovery
   permissions.ts       shell prefix permission rules (allow / deny, deny wins)
@@ -222,7 +223,7 @@ src/
     index.ts           the default toolset
   cli.ts               one-shot and interactive entry point
 examples/demo.ts       the loop running against a scripted model, offline
-test/                  suites: loop, parser, tools, search, edit, line endings, shell, permissions, config, streaming, end-to-end
+test/                  suites: loop, parser, tools, search, edit, line endings, shell, permissions, config, context, streaming, end-to-end
 ```
 
 ## Tests

@@ -1,5 +1,12 @@
 ﻿export { Agent, DEFAULT_SYSTEM_PROMPT, type AgentOptions } from './agent.ts'
 export {
+  pruneMiddle,
+  projectHistory,
+  resolveContextOptions,
+  type ContextOptions,
+  type ResolvedContextOptions,
+} from './context.ts'
+export {
   globalConfigDir,
   globalConfigFile,
   loadGlobalConfig,

@@ -11,6 +11,7 @@ import type {
   ToolDefinition,
 } from './types.ts'
 import { ToolRegistry } from './tools/registry.ts'
+import { projectHistory, resolveContextOptions, type ContextOptions } from './context.ts'
 
 export const DEFAULT_SYSTEM_PROMPT = [
   'You are hi-agent, a general-purpose assistant that solves tasks by calling tools.',
@@ -50,6 +51,12 @@ export interface AgentOptions {
    * arrives. Defaults to true; set to false to use `chat()` (non-streaming).
    */
   stream?: boolean
+  /**
+   * How the request view is derived from the history. Old tool results beyond
+   * these budgets are pruned in the projection (the history itself is never
+   * modified). See `src/context.ts`.
+   */
+  contextOptions?: ContextOptions
 }
 
 /**
@@ -75,6 +82,7 @@ export class Agent {
   private readonly onEvent: ((event: AgentEvent) => void) | undefined
   private readonly signal: AbortSignal | undefined
   private readonly stream: boolean
+  private readonly contextOptions: ReturnType<typeof resolveContextOptions>
   private approver: ((request: string, command?: string) => Promise<boolean>) | undefined
 
   constructor(options: AgentOptions) {
@@ -87,6 +95,7 @@ export class Agent {
     this.signal = options.signal
     this.stream = options.stream ?? true
     this.approver = options.approver
+    this.contextOptions = resolveContextOptions(options.contextOptions)
 
     const systemPrompt =
       options.systemPrompt === undefined ? DEFAULT_SYSTEM_PROMPT : options.systemPrompt
@@ -176,14 +185,18 @@ export class Agent {
   /**
    * Ask the model for one reply. Prefers streaming when the LLM supports it,
    * emitting `token` events as text arrives; otherwise falls back to `chat()`.
+   *
+   * The model never sees `history` directly: it sees a projection where old
+   * tool results are pruned, while the stored history keeps full fidelity.
    */
   private async askModel(definitions: ToolDefinition[]): Promise<LLMResponse> {
+    const view = projectHistory(this.history, this.contextOptions)
     if (this.stream && this.llm.stream) {
       let content = ''
       const toolCalls: ToolCall[] = []
       let usage: LLMResponse['usage']
       try {
-        for await (const event of this.llm.stream(this.history, definitions, { signal: this.signal })) {
+        for await (const event of this.llm.stream(view, definitions, { signal: this.signal })) {
           if (event.type === 'delta') {
             content += event.delta
             this.emit({ type: 'token', delta: event.delta })
@@ -204,7 +217,7 @@ export class Agent {
       }
       return { content, toolCalls, usage }
     }
-    return this.llm.chat(this.history, definitions, { signal: this.signal })
+    return this.llm.chat(view, definitions, { signal: this.signal })
   }
 
   /**

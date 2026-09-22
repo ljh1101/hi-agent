@@ -2,11 +2,18 @@
 export {
   contextUsage,
   estimateTokens,
+  findCutPoint,
   pruneMiddle,
   projectHistory,
+  resolveCompactionOptions,
   resolveContextOptions,
+  serializeForSummary,
+  shouldCompact,
+  SUMMARY_PROMPT,
+  type CompactionOptions,
   type ContextOptions,
   type ContextUsage,
+  type ResolvedCompactionOptions,
   type ResolvedContextOptions,
   type TokenUsage,
 } from './context.ts'

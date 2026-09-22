@@ -34,7 +34,7 @@ Hard constraints — violating any of these is a regression:
 | `src/types.ts` | The contract: `ChatMessage`, `LLM`, `Tool`, events | Shared by everything; changing it ripples everywhere |
 | `src/agent.ts` | The loop, history, tool execution, error recovery | Do not add business logic here |
 | `src/llm.ts` | OpenAI-compatible client + retry/backoff + SSE streaming | Swap providers by editing this file only |
-| `src/context.ts` | Request projection: old tool results pruned | History is the source of truth; the model only ever sees a projection |
+| `src/context.ts` | Request projection + token accounting + LLM compaction | History is the source of truth; the model only ever sees a projection. Compaction is the one operation that intentionally rewrites history — failure must leave it untouched |
 | `src/config.ts` | Config layering (CLI > env > project > global) | Secrets resolve here, never in the loop |
 | `src/providers.ts` | Provider presets + `/models` listing | |
 | `src/permissions.ts` | Shell prefix rules (allow / deny, deny wins) | |
@@ -55,7 +55,9 @@ These rules are the project's soul. Do not "optimize" them away:
    `execute`. There is no plugin system.
 4. **History is truth, requests are projections.** `agent.history` keeps full
    fidelity (base for persistence/rewind). Everything the model sees goes
-   through `projectHistory`; never mutate stored messages.
+   through `projectHistory`; never mutate stored messages. The single
+   exception is `compact()`: it deliberately trades detail for the ability to
+   continue, and on failure it must leave history byte-identical.
 
 ## Code Quality
 

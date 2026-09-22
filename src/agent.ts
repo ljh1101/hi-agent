@@ -13,9 +13,16 @@ import type {
 import { ToolRegistry } from './tools/registry.ts'
 import {
   contextUsage,
+  findCutPoint,
   projectHistory,
+  resolveCompactionOptions,
   resolveContextOptions,
+  serializeForSummary,
+  shouldCompact,
+  SUMMARY_PROMPT,
+  type CompactionOptions,
   type ContextOptions,
+  type ResolvedCompactionOptions,
 } from './context.ts'
 
 export const DEFAULT_SYSTEM_PROMPT = [
@@ -62,6 +69,13 @@ export interface AgentOptions {
    * modified). See `src/context.ts`.
    */
   contextOptions?: ContextOptions
+  /**
+   * Compaction: when the estimated context crosses the threshold, the agent
+   * summarizes the old part of the conversation with an LLM call and replaces
+   * it in the history. Disabled unless `contextWindow` is set. See
+   * `src/context.ts`.
+   */
+  compaction?: CompactionOptions
 }
 
 /**
@@ -88,6 +102,7 @@ export class Agent {
   private readonly signal: AbortSignal | undefined
   private readonly stream: boolean
   private readonly contextOptions: ReturnType<typeof resolveContextOptions>
+  private readonly compactionOptions: ResolvedCompactionOptions
   /** Provider-reported usage, anchored at the assistant message it produced. */
   private readonly usages = new Map<number, { totalTokens?: number }>()
   private approver: ((request: string, command?: string) => Promise<boolean>) | undefined
@@ -103,6 +118,7 @@ export class Agent {
     this.stream = options.stream ?? true
     this.approver = options.approver
     this.contextOptions = resolveContextOptions(options.contextOptions)
+    this.compactionOptions = resolveCompactionOptions(options.compaction)
 
     const systemPrompt =
       options.systemPrompt === undefined ? DEFAULT_SYSTEM_PROMPT : options.systemPrompt
@@ -131,6 +147,63 @@ export class Agent {
     return contextUsage(projectHistory(this.history, this.contextOptions), this.usages).tokens
   }
 
+  /**
+   * Compact the conversation: summarize everything before the cut point with
+   * an LLM call and replace it in the history, keeping the system prompt(s)
+   * and the most recent turns verbatim.
+   *
+   * This is the one operation that intentionally rewrites stored history —
+   * the detail loss is the explicit trade for being able to continue. On
+   * summarization failure nothing is changed and the run proceeds (the next
+   * request may then hit the provider's window limit, which is safer than
+   * corrupting the conversation).
+   */
+  async compact(): Promise<boolean> {
+    const { keepFrom } = findCutPoint(this.history, this.compactionOptions.keepRecentTokens)
+    const systemMessages = this.history.filter((message) => message.role === 'system')
+    const compacted = this.history.slice(0, keepFrom).filter((message) => message.role !== 'system')
+    if (compacted.length === 0) {
+      this.emit({ type: 'compaction', summaryTokens: 0, keptFrom: keepFrom, ok: true })
+      return true
+    }
+
+    const transcript = serializeForSummary(compacted)
+    try {
+      const summaryReply = await this.llm.chat(
+        [
+          ...systemMessages,
+          { role: 'user', content: `${transcript}\n\n---\n\n${SUMMARY_PROMPT}` },
+        ],
+        [], // no tools: the summarizer must only summarize
+        { signal: this.signal },
+      )
+      const summary = summaryReply.content?.trim()
+      if (!summary) return false
+
+      const kept = this.history.slice(keepFrom)
+      this.history.length = 0
+      this.history.push(
+        ...systemMessages,
+        { role: 'system', content: `Summary of the earlier conversation:\n\n${summary}` },
+        ...kept,
+      )
+      // Usage anchors refer to old indices; drop them (estimates take over).
+      this.usages.clear()
+
+      this.emit({
+        type: 'compaction',
+        summaryTokens: Math.ceil(summary.length / 4),
+        keptFrom: keepFrom,
+        ok: true,
+      })
+      return true
+    } catch {
+      // Provider failure during summarization: leave history untouched.
+      this.emit({ type: 'compaction', summaryTokens: 0, keptFrom: keepFrom, ok: false })
+      return false
+    }
+  }
+
   /** Swap the model/provider mid-session without losing the conversation. */
   setLLM(llm: LLM): void {
     this.llm = llm
@@ -155,6 +228,13 @@ export class Agent {
         return this.finish(lastContent, step - 1, 'aborted')
       }
       this.emit({ type: 'step', step })
+
+      // Auto-compaction: when the estimate crosses the threshold, compress
+      // before the request goes out. Disabled unless a contextWindow was given.
+      if (shouldCompact(this.estimateContextTokens(), this.compactionOptions)) {
+        await this.compact()
+      }
+
       this.emit({ type: 'context_usage', tokens: this.estimateContextTokens() })
 
       const reply = await this.askModel(definitions)

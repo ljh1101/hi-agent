@@ -181,3 +181,153 @@ export function contextUsage(
   }
   return { tokens: anchorTokens + trailing, hasUsageBasis: true }
 }
+
+// ---------------------------------------------------------------------------
+// Compaction (stage 3)
+// ---------------------------------------------------------------------------
+
+export interface CompactionOptions {
+  /**
+   * Total context window of the model in tokens. Auto-compaction is disabled
+   * when unknown (0). There is no reliable cross-provider way to discover this,
+   * so it must be supplied by the caller.
+   */
+  contextWindow?: number
+  /** Trigger compaction when usage exceeds window - reserve. Default 16384. */
+  reserveTokens?: number
+  /**
+   * Tokens of recent history kept verbatim after compaction. The cut point
+   * lands on a user/assistant boundary; tool results are never split from
+   * their calls. Default 20000.
+   */
+  keepRecentTokens?: number
+}
+
+const COMPACTION_DEFAULTS = {
+  reserveTokens: 16_384,
+  keepRecentTokens: 20_000,
+}
+
+export interface ResolvedCompactionOptions {
+  contextWindow: number
+  reserveTokens: number
+  keepRecentTokens: number
+}
+
+export function resolveCompactionOptions(options: CompactionOptions = {}): ResolvedCompactionOptions {
+  return {
+    contextWindow: options.contextWindow ?? 0,
+    reserveTokens: options.reserveTokens ?? COMPACTION_DEFAULTS.reserveTokens,
+    keepRecentTokens: options.keepRecentTokens ?? COMPACTION_DEFAULTS.keepRecentTokens,
+  }
+}
+
+/** Whether the estimated usage crosses the compaction threshold. */
+export function shouldCompact(
+  estimatedTokens: number,
+  options: ResolvedCompactionOptions,
+): boolean {
+  if (options.contextWindow <= 0) return false
+  return estimatedTokens > options.contextWindow - options.reserveTokens
+}
+
+export interface CutPoint {
+  /**
+   * Index of the first message to keep. Everything before it (except system
+   * messages) is compacted away. 0 means "keep everything" (no cut).
+   */
+  keepFrom: number
+}
+
+/**
+ * Find the cut point that keeps approximately `keepRecentTokens` of the newest
+ * history. Walks backwards accumulating estimates, then advances to the next
+ * user/assistant boundary so a tool result is never separated from its call.
+ */
+export function findCutPoint(
+  messages: readonly ChatMessage[],
+  keepRecentTokens: number,
+): CutPoint {
+  let accumulated = 0
+  let cut = messages.length
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!
+    if (message.role === 'system') continue
+    accumulated += estimateTokens(message)
+    if (accumulated >= keepRecentTokens) {
+      cut = index
+      break
+    }
+    cut = index
+  }
+
+  // Advance to a boundary that never splits a tool result from its call:
+  // the cut must land on a user message (a turn start), or on an assistant
+  // message whose tool calls (and therefore results) follow it.
+  while (cut < messages.length) {
+    const role = messages[cut]!.role
+    if (role === 'user') return { keepFrom: cut }
+    if (role === 'assistant') {
+      // An assistant with tool_calls may be followed by tool results; keep them
+      // together by cutting *at* the assistant (results come after, kept).
+      return { keepFrom: cut }
+    }
+    cut++ // tool or other: move forward to the next boundary
+  }
+  return { keepFrom: messages.length }
+}
+
+/**
+ * Serialize the messages being compacted away into the transcript the
+ * summarizer model reads. Tool output is capped the same way the projection
+ * caps it, so summarizing a huge history does not itself blow the window.
+ */
+export function serializeForSummary(
+  messages: readonly ChatMessage[],
+  maxToolChars = 2000,
+): string {
+  const lines: string[] = []
+  for (const message of messages) {
+    if (message.role === 'system') continue
+    if (message.role === 'user') {
+      lines.push(`[User]: ${message.content ?? ''}`)
+    } else if (message.role === 'assistant') {
+      if (message.content) lines.push(`[Assistant]: ${message.content}`)
+      for (const call of message.tool_calls ?? []) {
+        lines.push(`[Assistant tool call]: ${call.name}(${call.arguments})`)
+      }
+    } else if (message.role === 'tool') {
+      const content = message.content ?? ''
+      const shown =
+        content.length <= maxToolChars
+          ? content
+          : `${content.slice(0, maxToolChars)}\n[truncated]`
+      lines.push(`[Tool result]: ${shown}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/** Prompt for the summarization call, asking for a structured checkpoint. */
+export const SUMMARY_PROMPT = `Summarize the conversation transcript above. Another instance of the assistant will continue the work using only your summary, so preserve what matters to continue.
+
+Use this format:
+
+## Goal
+What the user is trying to accomplish.
+
+## Constraints & Preferences
+Any requirements, preferences, or constraints mentioned by the user.
+
+## Progress
+- Done: completed steps and changes (mention exact file paths)
+- In progress: what was being worked on
+- Blocked: anything preventing progress
+
+## Key Decisions
+Decisions made and why.
+
+## Next Steps
+What should happen next, in order.
+
+Keep each section concise. Preserve exact file paths, commands, and error messages. Reply with the summary only.`

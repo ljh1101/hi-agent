@@ -3,9 +3,13 @@ import { test } from 'node:test'
 import {
   contextUsage,
   estimateTokens,
+  findCutPoint,
   pruneMiddle,
   projectHistory,
+  resolveCompactionOptions,
   resolveContextOptions,
+  serializeForSummary,
+  shouldCompact,
 } from '../src/context.ts'
 import type { ChatMessage } from '../src/types.ts'
 
@@ -222,4 +226,79 @@ test('contextUsage ignores zero or missing totals in the usage map', () => {
   const usage = contextUsage(messages, usages)
   assert.equal(usage.hasUsageBasis, false)
   assert.equal(usage.tokens, 1500)
+})
+
+// ---------------------------------------------------------------------------
+// Compaction (stage 3)
+// ---------------------------------------------------------------------------
+
+test('shouldCompact respects the threshold and the window guard', () => {
+  const on = resolveCompactionOptions({ contextWindow: 100_000 })
+  assert.equal(shouldCompact(83_616, on), false, 'exactly at the threshold does not cross (strict >)')
+  assert.equal(shouldCompact(83_617, on), true, 'one past the threshold crosses')
+
+  const off = resolveCompactionOptions({})
+  assert.equal(off.contextWindow, 0)
+  assert.equal(shouldCompact(1_000_000, off), false, 'no window: auto-compaction disabled')
+})
+
+test('findCutPoint keeps the newest turns up to the budget', () => {
+  const messages: ChatMessage[] = [
+    user('a'.repeat(4000)), // turn A (1000 tokens)
+    assistant('b'.repeat(4000)),
+    user('c'.repeat(4000)), // turn B
+    assistant('d'.repeat(4000)),
+    user('e'.repeat(4000)), // turn C
+    assistant('f'.repeat(4000)),
+  ]
+  // Budget for ~2500 tokens: the tail from the cut must cover it and land on
+  // a turn boundary message.
+  const { keepFrom } = findCutPoint(messages, 2500)
+  const boundary = messages[keepFrom]!
+  assert.ok(boundary.role === 'user' || boundary.role === 'assistant')
+  const keptTokens = messages.slice(keepFrom).reduce((sum, m) => sum + estimateTokens(m), 0)
+  assert.ok(keptTokens >= 2500, `kept ${keptTokens} tokens, expected >= budget`)
+  // And it kept strictly less than the whole history.
+  assert.ok(keepFrom > 0)
+})
+
+test('findCutPoint never cuts between a tool call and its result', () => {
+  const messages: ChatMessage[] = [
+    user('a'.repeat(4000)),
+    assistant('b'.repeat(4000)),
+    user('c'.repeat(4000)),
+    // A tool call right at the budget boundary...
+    assistant('run', [{ id: 't1', name: 'shell', arguments: '{}' }]),
+    tool('t1', 'd'.repeat(4000)),
+    user('e'.repeat(4000)),
+  ]
+  const { keepFrom } = findCutPoint(messages, 1200)
+  const cut = messages[keepFrom]!
+  assert.ok(cut.role === 'user' || cut.role === 'assistant', 'cut is at a boundary message')
+  if (cut.role === 'assistant' && cut.tool_calls?.length) {
+    // The tool result after it must be kept too.
+    assert.equal(messages[keepFrom + 1]!.role, 'tool')
+  }
+})
+
+test('serializeForSummary caps tool output and labels roles', () => {
+  const messages: ChatMessage[] = [
+    { role: 'system', content: 'sys' },
+    user('hello'),
+    assistant('run it', [{ id: 't1', name: 'shell', arguments: '{"command":"ls"}' }]),
+    tool('t1', 'x'.repeat(5000)),
+  ]
+  const text = serializeForSummary(messages)
+  assert.match(text, /\[User\]: hello/)
+  assert.match(text, /\[Assistant tool call\]: shell\(/)
+  assert.match(text, /\[Tool result\]: x{2000}/)
+  assert.match(text, /\[truncated\]/)
+  assert.ok(!text.includes('sys'))
+})
+
+test('resolveCompactionOptions applies defaults', () => {
+  const resolved = resolveCompactionOptions({})
+  assert.equal(resolved.contextWindow, 0)
+  assert.equal(resolved.reserveTokens, 16_384)
+  assert.equal(resolved.keepRecentTokens, 20_000)
 })

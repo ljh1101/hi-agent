@@ -195,12 +195,16 @@ await agent.run('And which file implements the tool registry?')
 ```
 
 `onEvent` emits `step`, `context_usage`, `assistant`, `tool_call`, `tool_result`,
-`log`, `token`, `final` and `max_steps`. `context_usage` fires before each model
-request with the estimated token count (provider-reported usage anchored,
-chars/4 for newer messages); the CLI shows it as `[context ~12k tokens]` in
-verbose mode. `agent.estimateContextTokens()` exposes the same number.
-Set `stream: true` on the `Agent` (the default) to get `token` events as the
-model streams its reply. Stream them to a UI, or ignore them.
+`log`, `token`, `compaction`, `final` and `max_steps`. `context_usage` fires
+before each model request with the estimated token count (provider-reported
+usage anchored, chars/4 for newer messages); the CLI shows it as
+`[context ~12k tokens]` in verbose mode. Set `compaction: { contextWindow }`
+on the `Agent` to enable auto-compaction: when the estimate crosses
+`window - reserve`, the old history is summarized with an LLM call and
+replaced by a structured summary, keeping the most recent turns verbatim.
+Set `contextWindow` in `hi-agent.json` to arm it for
+your model. `agent.compact()` (or `/compact` in the REPL) triggers it
+manually. On summarization failure the history is left untouched.
 
 ## Project layout
 
@@ -209,7 +213,7 @@ src/
   types.ts             the whole contract: ChatMessage, LLM, Tool, events (~130 lines)
   agent.ts             the loop, history management, tool execution, error recovery
   llm.ts               OpenAI-compatible client + retry/backoff + SSE streaming
-  context.ts           request projection + token accounting (usage-anchored, chars/4 fallback)
+  context.ts           request projection + token accounting + LLM compaction
   config.ts            global vs project config loading + secret resolution
   providers.ts         provider presets + `/models` discovery
   permissions.ts       shell prefix permission rules (allow / deny, deny wins)

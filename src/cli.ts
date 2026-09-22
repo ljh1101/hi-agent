@@ -60,7 +60,8 @@ right base URL and model), then your key, and saves both to your home dir
 hi-agent.json next to --root for shareable, secret-free defaults
 (baseUrl/model) that get committed with the repo.
 
-In-session commands: /reset clears history, /model switches model (or /model <id>), exit or quit leaves.
+In-session commands: /reset clears history, /model switches model (or /model <id>),
+/compact summarizes old history, exit or quit leaves.
 
 Examples:
   hi-agent "What time is it, and what is 23 * 17?"
@@ -184,6 +185,16 @@ function renderEvent(event: AgentEvent, verbose: boolean): void {
         console.log(color(DIM, `[context ~${formatTokens(event.tokens)} tokens]`))
       }
       break
+    case 'compaction':
+      console.log(
+        color(
+          event.ok ? DIM : RED,
+          event.ok
+            ? `(compacted: summary ~${formatTokens(event.summaryTokens)} tokens, kept recent history)`
+            : '(compaction failed; history unchanged)',
+        ),
+      )
+      break
     case 'assistant':
       if (verbose && event.content.trim() !== '') {
         console.log(color(DIM, `[model] ${event.content.trim()}`))
@@ -298,6 +309,11 @@ async function repl(session: SessionConfig & { yes?: boolean }): Promise<void> {
       }
       if (input === '/model' || input.startsWith('/model ')) {
         await switchModel(session, rl, input.slice('/model'.length).trim())
+        continue
+      }
+      if (input === '/compact') {
+        const ok = await agent.compact()
+        console.log(color(DIM, ok ? '(history compacted)' : '(compaction failed; history unchanged)'))
         continue
       }
       try {

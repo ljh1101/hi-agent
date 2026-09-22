@@ -154,6 +154,8 @@ export type AgentEvent =
    * usage plus a chars/4 estimate for messages after it. Emitted every step.
    */
   | { type: 'context_usage'; tokens: number }
+  /** Compaction replaced old history with a summary (or failed trying). */
+  | { type: 'compaction'; summaryTokens: number; keptFrom: number; ok: boolean }
 
 /** Why the loop stopped. */
 export type StopReason = 'final' | 'max_steps' | 'aborted'

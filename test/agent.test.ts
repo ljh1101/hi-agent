@@ -368,3 +368,95 @@ test('emits context_usage grounded in reported usage once available', async () =
   // After the final reply is appended, the running estimate only grows.
   assert.ok(agent.estimateContextTokens() >= seen[1]!)
 })
+
+// ---------------------------------------------------------------------------
+// Compaction (stage 3)
+// ---------------------------------------------------------------------------
+
+test('compact replaces old history with an LLM summary, keeping recent turns', async () => {
+  const summary = '## Goal\nfinish the thing'
+  const oldWork = 'x'.repeat(4000) // ~1000 tokens so the cut actually separates
+  // Script: turn 1 (tool loop), then the summarization call, then turn 2.
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('echo', { text: oldWork })),
+    reply('first done'),
+    // The compaction call: no tools offered, returns the summary.
+    reply(summary),
+    reply('second done'),
+  ])
+  const agent = new Agent({
+    llm,
+    tools: [echoTool],
+    maxSteps: 4,
+    // Keep budget smaller than the tool result, so the cut separates old/recent.
+    compaction: { contextWindow: 100_000, keepRecentTokens: 100 },
+  })
+
+  await agent.run('go') // turn 1 with a tool call
+  const historyBefore = agent.history.length
+
+  const ok = await agent.compact()
+  assert.equal(ok, true)
+  assert.ok(agent.history.length < historyBefore, 'history shrank')
+
+  // System prompt + summary + recent tail survive.
+  const roles = agent.history.map((m) => m.role)
+  assert.equal(roles[0], 'system')
+  const summaryMessage = agent.history.find((m) => m.role === 'system' && /Summary of the earlier conversation/.test(m.content ?? ''))
+  assert.ok(summaryMessage, 'summary message present')
+  assert.match(summaryMessage!.content ?? '', /finish the thing/)
+  // The summary sits before any kept conversation message.
+  const firstNonSystem = agent.history.findIndex((m) => m.role !== 'system')
+  assert.ok(agent.history.indexOf(summaryMessage!) < firstNonSystem)
+  // The compacted tool result is gone from history (it lives in the summary).
+  assert.ok(!agent.history.some((m) => m.role === 'tool'))
+
+  // The summarization request itself carried no tools.
+  const summaryRequest = llm.requests[2]!
+  assert.equal(summaryRequest.tools.length, 0)
+})
+
+test('compaction failure leaves the history untouched', async () => {
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('echo', { text: 'w'.repeat(4000) })),
+    reply('done'),
+  ])
+  // The summarization call is not scripted -> ScriptedLLM throws.
+  const agent = new Agent({
+    llm,
+    tools: [echoTool],
+    compaction: { contextWindow: 100_000, keepRecentTokens: 100 },
+  })
+  await agent.run('go')
+  const before = JSON.stringify(agent.history)
+
+  const ok = await agent.compact()
+  assert.equal(ok, false)
+  assert.equal(JSON.stringify(agent.history), before)
+})
+
+test('auto-compaction triggers when the estimate crosses the threshold', async () => {
+  const summary = '## Goal\nkeep going'
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('echo', { text: 'a'.repeat(8000) })), // step 1: tool call
+    reply(summary), // auto-compaction fires before step 2 and consumes this
+    reply('final'), // step 2: the model answers with the compacted view
+  ])
+  const events: string[] = []
+  const agent = new Agent({
+    llm,
+    tools: [echoTool],
+    maxSteps: 4,
+    // Tiny window so the threshold is crossed after the first tool result.
+    compaction: { contextWindow: 3000, reserveTokens: 1000, keepRecentTokens: 500 },
+    onEvent: (event) => events.push(event.type),
+  })
+
+  const result = await agent.run('go')
+  assert.equal(result.content, 'final')
+  assert.ok(events.includes('compaction'), 'compaction event fired')
+  const summaryMessage = agent.history.find(
+    (m) => m.role === 'system' && /Summary of the earlier conversation/.test(m.content ?? ''),
+  )
+  assert.ok(summaryMessage, 'history contains the compaction summary')
+})

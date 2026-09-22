@@ -202,9 +202,12 @@ usage anchored, chars/4 for newer messages); the CLI shows it as
 on the `Agent` to enable auto-compaction: when the estimate crosses
 `window - reserve`, the old history is summarized with an LLM call and
 replaced by a structured summary, keeping the most recent turns verbatim.
-Set `contextWindow` in `hi-agent.json` to arm it for
-your model. `agent.compact()` (or `/compact` in the REPL) triggers it
-manually. On summarization failure the history is left untouched.
+The window is discovered automatically from the
+[models.dev](https://models.dev) community catalog during setup and `/model`
+switching (exact id match; smallest window wins when providers disagree;
+private deployments set `contextWindow` in `hi-agent.json` instead).
+`agent.compact()` (or `/compact` in the REPL) triggers it manually. On
+summarization failure the history is left untouched.
 
 ## Project layout
 

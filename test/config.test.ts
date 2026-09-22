@@ -10,7 +10,7 @@ import {
   resolveConfig,
   saveGlobalConfig,
 } from '../src/config.ts'
-import { findProvider, listModels, PROVIDERS } from '../src/providers.ts'
+import { findProvider, listModels, lookupContextWindow, PROVIDERS, resetModelsDevCache } from '../src/providers.ts'
 
 const scratchDirs: string[] = []
 
@@ -196,4 +196,46 @@ test('listModels passes an abort signal so a hanging endpoint can be cancelled',
   // Assert the timeout signal is active before we abandon the pending request.
   assert.ok(!seenSignal!.aborted)
   pending.catch(() => {})
+})
+test('lookupContextWindow matches exact ids across providers', async () => {
+  resetModelsDevCache()
+  const catalog = {
+    a: { models: { 'gpt-4o-mini': { id: 'gpt-4o-mini', limit: { context: 128000 } } } },
+    b: { models: { 'gpt-4o-mini': { id: 'gpt-4o-mini', limit: { context: 64000 } } } },
+    c: { models: { other: { id: 'other', limit: { context: 999 } } } },
+  }
+  const fakeFetch = (async () =>
+    new Response(JSON.stringify(catalog), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof globalThis.fetch
+
+  // Several providers list the same id: the smallest window wins (safe side).
+  assert.equal(await lookupContextWindow('gpt-4o-mini', fakeFetch), 64000)
+  // OpenRouter-style id: the bare part is matched.
+  assert.equal(await lookupContextWindow('vendor/gpt-4o-mini', fakeFetch), 64000)
+})
+
+test('lookupContextWindow returns undefined for missing or ambiguous models', async () => {
+  resetModelsDevCache()
+  const catalog = {
+    a: { models: { 'llama-3': { id: 'llama-3', limit: { context: 8192 } } } },
+  }
+  const fakeFetch = (async () =>
+    new Response(JSON.stringify(catalog), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof globalThis.fetch
+
+  // Prefix relationships never match: only exact ids do.
+  assert.equal(await lookupContextWindow('llama-3.5', fakeFetch), undefined)
+  assert.equal(await lookupContextWindow('totally-unknown', fakeFetch), undefined)
+})
+
+test('lookupContextWindow swallows network failures', async () => {
+  resetModelsDevCache()
+  const broken = (async () => {
+    throw new Error('offline')
+  }) as typeof globalThis.fetch
+  assert.equal(await lookupContextWindow('gpt-4o-mini', broken), undefined)
 })

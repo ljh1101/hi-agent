@@ -24,6 +24,8 @@ export interface HiAgentConfig {
   model?: string
   /** Shell permission rules: `allow` prefixes run without asking, `deny` always reject. */
   permissions?: PermissionRules
+  /** Model context window in tokens; enables auto-compaction when set. */
+  contextWindow?: number
 }
 
 export interface ConfigOverride {
@@ -36,6 +38,8 @@ export interface ResolvedConfig {
   apiKey: string | undefined
   baseURL: string
   model: string
+  /** Model context window (tokens), when configured; enables auto-compaction. */
+  contextWindow: number | undefined
 }
 
 const CONFIG_FILE_NAME = 'config.json'
@@ -175,5 +179,12 @@ export async function resolveConfig(
     global.model,
   ) ?? (deepSeek ? 'deepseek-chat' : 'gpt-4o-mini')
 
-  return { apiKey, baseURL, model }
+  const contextWindow =
+    typeof project.contextWindow === 'number' && project.contextWindow > 0
+      ? project.contextWindow
+      : typeof global.contextWindow === 'number' && global.contextWindow > 0
+        ? global.contextWindow
+        : undefined
+
+  return { apiKey, baseURL, model, contextWindow }
 }

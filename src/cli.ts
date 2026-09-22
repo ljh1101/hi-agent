@@ -12,7 +12,7 @@ import {
 import type { HiAgentConfig } from './config.ts'
 import { derivePrefixRule, matchesPrefix, parseRules, type PermissionRules } from './permissions.ts'
 import { LLMError, OpenAICompatibleLLM } from './llm.ts'
-import { listModels, PROVIDERS } from './providers.ts'
+import { listModels, lookupContextWindow, PROVIDERS } from './providers.ts'
 import { splitSubcommands } from './command-parse.ts'
 import { createDefaultTools } from './tools/index.ts'
 import type { AgentEvent } from './types.ts'
@@ -358,7 +358,15 @@ async function switchModel(session: SessionConfig, rl: ReturnType<typeof createI
     new OpenAICompatibleLLM({ apiKey: session.apiKey, baseURL: session.baseURL, model }),
   )
   session.model = model
-  await saveGlobalConfig({ model }, globalConfigDir())
+  const patch: HiAgentConfig = { model }
+  // Best-effort window discovery from the models.dev catalog; failure keeps
+  // whatever window was configured (auto-compaction may stay disabled).
+  const window = await lookupContextWindow(model)
+  if (window) {
+    patch.contextWindow = window
+    console.log(color(DIM, `(context window: ${window} tokens, auto-compaction armed)`))
+  }
+  await saveGlobalConfig(patch, globalConfigDir())
   console.log(color(GREEN, `Switched to ${model}.`))
 }
 
@@ -439,6 +447,13 @@ async function setupFirstRun(force = false): Promise<HiAgentConfig | undefined> 
     }
 
     const saved: HiAgentConfig = { apiKey: key, baseURL, model }
+    // Best-effort: discover the context window from models.dev so
+    // auto-compaction is armed from the very first session.
+    const window = await lookupContextWindow(model)
+    if (window) {
+      saved.contextWindow = window
+      console.log(color(DIM, `(context window: ${window} tokens, auto-compaction armed)`))
+    }
     await saveGlobalConfig(saved, dir)
     console.log(color(DIM, `Saved to ${dir}/config.json (0600).`))
     return saved
@@ -486,6 +501,7 @@ async function main(): Promise<void> {
       config.apiKey = saved.apiKey
       config.baseURL = saved.baseURL ?? config.baseURL
       config.model = saved.model ?? config.model
+      config.contextWindow = saved.contextWindow ?? config.contextWindow
     }
   }
 
@@ -524,6 +540,7 @@ async function main(): Promise<void> {
     maxSteps: options.maxSteps ?? 12,
     systemPrompt: options.systemPrompt,
     stream: options.stream,
+    ...(config.contextWindow ? { compaction: { contextWindow: config.contextWindow } } : {}),
     onEvent: (event) => renderEvent(event, verbose),
   })
 

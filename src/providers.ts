@@ -66,6 +66,95 @@ export function findProvider(id: string): ProviderPreset | undefined {
   return PROVIDERS.find((provider) => provider.id === id)
 }
 
+// ---------------------------------------------------------------------------
+// Context window discovery via models.dev
+// ---------------------------------------------------------------------------
+
+const MODELS_DEV_URL = 'https://models.dev/api.json'
+
+interface ModelsDevModel {
+  id?: string
+  limit?: { context?: number; output?: number }
+}
+
+interface ModelsDevCatalog {
+  [provider: string]: { models?: Record<string, ModelsDevModel> } | string
+}
+
+/** In-process cache: the catalog is fetched at most once per session. */
+let catalogCache: Promise<ModelsDevCatalog> | undefined
+
+/** Drop the cached catalog; the next lookup refetches. */
+export function resetModelsDevCache(): void {
+  catalogCache = undefined
+}
+
+function fetchCatalog(
+  fetchImpl: typeof globalThis.fetch,
+  timeoutMs: number,
+): Promise<ModelsDevCatalog> {
+  catalogCache ??= (async () => {
+    const response = await fetchImpl(MODELS_DEV_URL, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to fetch models.dev catalog (HTTP ${response.status})`)
+    }
+    return (await response.json()) as ModelsDevCatalog
+  })()
+  // A failed fetch must not poison the cache for later retries.
+  catalogCache.catch(() => {
+    catalogCache = undefined
+  })
+  return catalogCache
+}
+
+/**
+ * Look up a model's context window in the models.dev community catalog
+ * (200+ providers, free, no key). Model ids are matched across all providers
+ * because ids are near-globally-unique and provider keys in the catalog do
+ * not always match our preset ids (e.g. moonshotai vs moonshot).
+ *
+ * Only exact id matches count: prefix guessing would mis-size the window and
+ * mistime compaction. When several providers list the same id with different
+ * windows, the smallest wins — underestimating is safe (compacts earlier),
+ * overestimating hits the provider limit. Returns undefined when nothing is
+ * found: callers keep their configured window or stay without
+ * auto-compaction.
+ */
+export async function lookupContextWindow(
+  modelId: string,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  timeoutMs = 5_000,
+): Promise<number | undefined> {
+  if (!modelId) return undefined
+  let catalog: ModelsDevCatalog
+  try {
+    catalog = await fetchCatalog(fetchImpl, timeoutMs)
+  } catch {
+    return undefined // offline or blocked: window stays unknown, never fatal
+  }
+
+  // OpenRouter-style ids are "vendor/model"; the bare part is what catalogs list.
+  const needle = modelId.includes('/') ? modelId.split('/').pop()! : modelId
+  const needleLower = needle.toLowerCase()
+
+  let smallest: number | undefined
+  for (const provider of Object.values(catalog)) {
+    if (!provider || typeof provider === 'string') continue
+    for (const model of Object.values(provider.models ?? {})) {
+      const context = model.limit?.context
+      if (!context || context <= 0) continue
+      const id = model.id ?? ''
+      if (id.toLowerCase() === needleLower) {
+        smallest = smallest === undefined ? context : Math.min(smallest, context)
+      }
+    }
+  }
+  return smallest
+}
+
 /**
  * Fetch the list of model ids advertised by an OpenAI-compatible endpoint.
  * This is the same `GET /models` call `opencode models` and the dsh CLI rely on.

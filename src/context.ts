@@ -193,33 +193,56 @@ export interface CompactionOptions {
    * so it must be supplied by the caller.
    */
   contextWindow?: number
-  /** Trigger compaction when usage exceeds window - reserve. Default 16384. */
-  reserveTokens?: number
   /**
-   * Tokens of recent history kept verbatim after compaction. The cut point
-   * lands on a user/assistant boundary; tool results are never split from
-   * their calls. Default 20000.
+   * Compaction triggers when usage exceeds `contextWindow * thresholdRatio`.
+   * A ratio scales across windows from 8k local models to 1M models, where a
+   * fixed token reserve cannot (a 16k reserve is 200% of an 8k window — the
+   * threshold goes negative and compaction never stops firing). Default 0.8.
    */
+  thresholdRatio?: number
+  /**
+   * After compaction, keep this fraction of the context window verbatim.
+   * Default 0.2.
+   */
+  retainRatio?: number
+  /**
+   * Explicit token overrides, taking precedence over the ratios. Prefer the
+   * ratios unless you know the exact budget you want.
+   */
+  reserveTokens?: number
   keepRecentTokens?: number
 }
 
 const COMPACTION_DEFAULTS = {
-  reserveTokens: 16_384,
-  keepRecentTokens: 20_000,
+  thresholdRatio: 0.8,
+  retainRatio: 0.2,
 }
 
 export interface ResolvedCompactionOptions {
   contextWindow: number
-  reserveTokens: number
+  thresholdRatio: number
+  retainRatio: number
+  /** Derived: window - window*ratio, or the explicit override. */
+  thresholdTokens: number
+  /** Derived: window * retainRatio, or the explicit override. */
   keepRecentTokens: number
 }
 
 export function resolveCompactionOptions(options: CompactionOptions = {}): ResolvedCompactionOptions {
-  return {
-    contextWindow: options.contextWindow ?? 0,
-    reserveTokens: options.reserveTokens ?? COMPACTION_DEFAULTS.reserveTokens,
-    keepRecentTokens: options.keepRecentTokens ?? COMPACTION_DEFAULTS.keepRecentTokens,
-  }
+  const contextWindow = options.contextWindow ?? 0
+  const thresholdRatio = options.thresholdRatio ?? COMPACTION_DEFAULTS.thresholdRatio
+  const retainRatio = options.retainRatio ?? COMPACTION_DEFAULTS.retainRatio
+  // Never let the threshold go non-positive: a tiny window must still be able
+  // to reach it, or compaction would fire on every step forever.
+  const thresholdTokens =
+    options.reserveTokens !== undefined
+      ? options.reserveTokens
+      : Math.max(1, Math.floor(contextWindow * thresholdRatio))
+  const keepRecentTokens =
+    options.keepRecentTokens !== undefined
+      ? options.keepRecentTokens
+      : Math.max(1, Math.floor(contextWindow * retainRatio))
+  return { contextWindow, thresholdRatio, retainRatio, thresholdTokens, keepRecentTokens }
 }
 
 /** Whether the estimated usage crosses the compaction threshold. */
@@ -228,7 +251,7 @@ export function shouldCompact(
   options: ResolvedCompactionOptions,
 ): boolean {
   if (options.contextWindow <= 0) return false
-  return estimatedTokens > options.contextWindow - options.reserveTokens
+  return estimatedTokens > options.thresholdTokens
 }
 
 export interface CutPoint {
@@ -279,12 +302,16 @@ export function findCutPoint(
 
 /**
  * Serialize the messages being compacted away into the transcript the
- * summarizer model reads. Tool output is capped the same way the projection
- * caps it, so summarizing a huge history does not itself blow the window.
+ * summarizer model reads. Two budgets keep the summarization request itself
+ * inside the window: each tool result is capped (`maxToolChars`) and the whole
+ * transcript is capped (`maxTotalChars`) by dropping the OLDEST lines first —
+ * the tail carries the most recent, most relevant context. A drop marker
+ * records what was removed.
  */
 export function serializeForSummary(
   messages: readonly ChatMessage[],
   maxToolChars = 2000,
+  maxTotalChars = 60_000,
 ): string {
   const lines: string[] = []
   for (const message of messages) {
@@ -305,7 +332,21 @@ export function serializeForSummary(
       lines.push(`[Tool result]: ${shown}`)
     }
   }
-  return lines.join('\n')
+
+  let text = lines.join('\n')
+  if (text.length <= maxTotalChars) return text
+
+  // Over budget: drop oldest lines until it fits, with a marker up front.
+  const kept: string[] = []
+  let total = 0
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index]!
+    if (total + line.length > maxTotalChars - 100) break
+    kept.unshift(line)
+    total += line.length
+  }
+  const dropped = lines.length - kept.length
+  return `[... ${dropped} oldest lines dropped to fit the summarization budget ...]\n${kept.join('\n')}`
 }
 
 /** Prompt for the summarization call, asking for a structured checkpoint. */

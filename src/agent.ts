@@ -163,6 +163,9 @@ export class Agent {
     const systemMessages = this.history.filter((message) => message.role === 'system')
     const compacted = this.history.slice(0, keepFrom).filter((message) => message.role !== 'system')
     if (compacted.length === 0) {
+      // Nothing eligible to compact: the whole history fits in the keep budget.
+      // Not an error — report it so UIs can say "nothing to compact" instead
+      // of a misleading "compacted".
       this.emit({ type: 'compaction', summaryTokens: 0, keptFrom: keepFrom, ok: true })
       return true
     }
@@ -223,6 +226,7 @@ export class Agent {
     const definitions = this.registry.definitions()
 
     let lastContent = ''
+    let compactionFailed = false
     for (let step = 1; step <= this.maxSteps; step++) {
       if (this.signal?.aborted) {
         return this.finish(lastContent, step - 1, 'aborted')
@@ -231,8 +235,14 @@ export class Agent {
 
       // Auto-compaction: when the estimate crosses the threshold, compress
       // before the request goes out. Disabled unless a contextWindow was given.
-      if (shouldCompact(this.estimateContextTokens(), this.compactionOptions)) {
-        await this.compact()
+      // After a failed compaction we stop retrying within this run: retrying
+      // every step would burn an LLM call per step on a doomed summarization.
+      if (
+        !compactionFailed &&
+        shouldCompact(this.estimateContextTokens(), this.compactionOptions)
+      ) {
+        const ok = await this.compact()
+        if (!ok) compactionFailed = true
       }
 
       this.emit({ type: 'context_usage', tokens: this.estimateContextTokens() })

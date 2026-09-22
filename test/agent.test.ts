@@ -460,3 +460,35 @@ test('auto-compaction triggers when the estimate crosses the threshold', async (
   )
   assert.ok(summaryMessage, 'history contains the compaction summary')
 })
+
+test('a failed compaction is not retried within the same run', async () => {
+  // A model whose second call (the summarization) always fails, but whose
+  // normal replies work: the loop must continue and stop retrying compaction.
+  let call = 0
+  const flakySummaryLLM: LLM = {
+    model: 'flaky-summary',
+    async chat(_messages, tools): Promise<LLMResponse> {
+      call++
+      if (tools.length === 0) throw new Error('summary endpoint down')
+      if (call === 1) {
+        return { content: null, toolCalls: [toolCall('echo', { text: 'w'.repeat(8000) })] }
+      }
+      return { content: 'recovered answer', toolCalls: [] }
+    },
+  }
+  const events: string[] = []
+  const agent = new Agent({
+    llm: flakySummaryLLM,
+    tools: [echoTool],
+    maxSteps: 3,
+    // Window so small the threshold is crossed immediately after the tool result.
+    compaction: { contextWindow: 2_500 },
+    onEvent: (event) => events.push(event.type),
+  })
+
+  const result = await agent.run('go')
+  // The loop continued after the failed compaction and produced the answer.
+  assert.equal(result.content, 'recovered answer')
+  // Exactly one compaction attempt happened, not one per step.
+  assert.equal(events.filter((type) => type === 'compaction').length, 1)
+})

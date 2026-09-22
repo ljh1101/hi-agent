@@ -200,7 +200,8 @@ before each model request with the estimated token count (provider-reported
 usage anchored, chars/4 for newer messages); the CLI shows it as
 `[context ~12k tokens]` in verbose mode. Set `compaction: { contextWindow }`
 on the `Agent` to enable auto-compaction: when the estimate crosses
-`window - reserve`, the old history is summarized with an LLM call and
+`window * 0.8` (the threshold scales with the window; explicit token
+overrides available), the old history is summarized with an LLM call and
 replaced by a structured summary, keeping the most recent turns verbatim.
 The window is discovered automatically from the
 [models.dev](https://models.dev) community catalog during setup and `/model`

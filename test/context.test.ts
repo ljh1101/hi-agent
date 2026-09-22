@@ -232,10 +232,28 @@ test('contextUsage ignores zero or missing totals in the usage map', () => {
 // Compaction (stage 3)
 // ---------------------------------------------------------------------------
 
-test('shouldCompact respects the threshold and the window guard', () => {
-  const on = resolveCompactionOptions({ contextWindow: 100_000 })
-  assert.equal(shouldCompact(83_616, on), false, 'exactly at the threshold does not cross (strict >)')
-  assert.equal(shouldCompact(83_617, on), true, 'one past the threshold crosses')
+test('shouldCompact uses ratio thresholds that scale across window sizes', () => {
+  const window100k = resolveCompactionOptions({ contextWindow: 100_000 })
+  // 0.8 ratio: threshold at 80000.
+  assert.equal(window100k.thresholdTokens, 80_000)
+  assert.equal(shouldCompact(80_000, window100k), false)
+  assert.equal(shouldCompact(80_001, window100k), true)
+
+  // A tiny window keeps a positive, reachable threshold: the fixed-reserve
+  // design went negative here and fired compaction on every step forever.
+  const window8k = resolveCompactionOptions({ contextWindow: 8_000 })
+  assert.ok(window8k.thresholdTokens > 0)
+  assert.equal(shouldCompact(6_399, window8k), false)
+  assert.equal(shouldCompact(6_401, window8k), true)
+
+  // Explicit token overrides still win over the ratio.
+  const overridden = resolveCompactionOptions({
+    contextWindow: 100_000,
+    reserveTokens: 10_000,
+    keepRecentTokens: 5_000,
+  })
+  assert.equal(overridden.thresholdTokens, 10_000)
+  assert.equal(overridden.keepRecentTokens, 5_000)
 
   const off = resolveCompactionOptions({})
   assert.equal(off.contextWindow, 0)
@@ -296,9 +314,27 @@ test('serializeForSummary caps tool output and labels roles', () => {
   assert.ok(!text.includes('sys'))
 })
 
-test('resolveCompactionOptions applies defaults', () => {
-  const resolved = resolveCompactionOptions({})
-  assert.equal(resolved.contextWindow, 0)
-  assert.equal(resolved.reserveTokens, 16_384)
-  assert.equal(resolved.keepRecentTokens, 20_000)
+test('resolveCompactionOptions applies ratio defaults', () => {
+  const resolved = resolveCompactionOptions({ contextWindow: 1_000_000 })
+  assert.equal(resolved.thresholdRatio, 0.8)
+  assert.equal(resolved.retainRatio, 0.2)
+  assert.equal(resolved.thresholdTokens, 800_000)
+  assert.equal(resolved.keepRecentTokens, 200_000)
+})
+
+test('serializeForSummary caps the total transcript, dropping oldest lines first', () => {
+  const messages: ChatMessage[] = []
+  for (let turn = 0; turn < 10; turn++) {
+    messages.push(user(`turn ${turn} ${'a'.repeat(900)}`))
+  }
+  const text = serializeForSummary(messages, 2000, 2_000)
+  assert.ok(text.length <= 2_100, `transcript is ${text.length} chars`)
+  // The newest turns survive; the drop marker names what went.
+  assert.match(text, /turn 9/)
+  assert.match(text, /oldest lines dropped/)
+})
+
+test('serializeForSummary leaves small transcripts untouched', () => {
+  const messages: ChatMessage[] = [user('hello'), assistant('hi')]
+  assert.equal(serializeForSummary(messages), '[User]: hello\n[Assistant]: hi')
 })

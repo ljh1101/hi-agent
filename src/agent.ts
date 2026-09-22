@@ -76,6 +76,14 @@ export interface AgentOptions {
    * `src/context.ts`.
    */
   compaction?: CompactionOptions
+  /**
+   * Persistence hooks. `onAppend` fires after every message the run loop adds
+   * (user / assistant / tool); `onReplace` fires when compaction rewrote the
+   * whole history. A session layer can use these to keep a JSONL file in
+   * sync without the agent knowing about files.
+   */
+  onAppend?: (message: ChatMessage) => void
+  onReplace?: (history: readonly ChatMessage[]) => void
 }
 
 /**
@@ -102,6 +110,8 @@ export class Agent {
   private readonly signal: AbortSignal | undefined
   private readonly stream: boolean
   private readonly contextOptions: ReturnType<typeof resolveContextOptions>
+  private persistenceOnAppend: ((message: ChatMessage) => void) | undefined
+  private persistenceOnReplace: ((history: readonly ChatMessage[]) => void) | undefined
   private readonly compactionOptions: ResolvedCompactionOptions
   /** Provider-reported usage, anchored at the assistant message it produced. */
   private readonly usages = new Map<number, { totalTokens?: number }>()
@@ -119,6 +129,8 @@ export class Agent {
     this.approver = options.approver
     this.contextOptions = resolveContextOptions(options.contextOptions)
     this.compactionOptions = resolveCompactionOptions(options.compaction)
+    this.persistenceOnAppend = options.onAppend
+    this.persistenceOnReplace = options.onReplace
 
     const systemPrompt =
       options.systemPrompt === undefined ? DEFAULT_SYSTEM_PROMPT : options.systemPrompt
@@ -192,6 +204,8 @@ export class Agent {
       )
       // Usage anchors refer to old indices; drop them (estimates take over).
       this.usages.clear()
+      // A compaction rewrote history: the persistence layer needs the snapshot.
+      this.persistenceOnReplace?.(this.history)
 
       this.emit({
         type: 'compaction',
@@ -212,9 +226,31 @@ export class Agent {
     this.llm = llm
   }
 
+  /**
+   * Replace the whole history (resuming a saved session). Does not fire the
+   * persistence hooks: the session layer owns what lands on disk.
+   */
+  restoreHistory(history: readonly ChatMessage[]): void {
+    this.history.length = 0
+    this.history.push(...history)
+    this.usages.clear()
+  }
+
   /** Attach or replace the approval hook for risky tool executions. */
   setApprover(approver: (request: string, command?: string) => Promise<boolean>): void {
     this.approver = approver
+  }
+
+  /**
+   * Attach or replace the persistence hooks after construction (used by the
+   * CLI, which wires the session store after building the agent).
+   */
+  setPersistenceHooks(
+    onAppend: (message: ChatMessage) => void,
+    onReplace: (history: readonly ChatMessage[]) => void,
+  ): void {
+    this.persistenceOnAppend = onAppend
+    this.persistenceOnReplace = onReplace
   }
 
   /**
@@ -222,7 +258,7 @@ export class Agent {
    * Never throws for model/tool failures that the model can recover from.
    */
   async run(input: string): Promise<RunResult> {
-    this.history.push({ role: 'user', content: input })
+    this.append({ role: 'user', content: input })
     const definitions = this.registry.definitions()
 
     let lastContent = ''
@@ -256,7 +292,7 @@ export class Agent {
         return this.finish(lastContent, step, 'aborted')
       }
 
-      this.history.push({
+      this.append({
         role: 'assistant',
         content: lastContent,
         ...(reply.toolCalls.length > 0 ? { tool_calls: reply.toolCalls } : {}),
@@ -277,7 +313,7 @@ export class Agent {
       // but sequential execution keeps ordering deterministic for the model.
       for (const call of reply.toolCalls) {
         const observation = await this.executeTool(call)
-        this.history.push({
+        this.append({
           role: 'tool',
           content: observation.content,
           tool_call_id: call.id,
@@ -404,6 +440,12 @@ export class Agent {
 
   private emit(event: AgentEvent): void {
     this.onEvent?.(event)
+  }
+
+  /** Append to the history and notify the persistence hook if present. */
+  private append(message: ChatMessage): void {
+    this.history.push(message)
+    this.persistenceOnAppend?.(message)
   }
 }
 

@@ -14,8 +14,17 @@ import { derivePrefixRule, matchesPrefix, parseRules, type PermissionRules } fro
 import { LLMError, OpenAICompatibleLLM } from './llm.ts'
 import { listModels, lookupContextWindow, PROVIDERS } from './providers.ts'
 import { splitSubcommands } from './command-parse.ts'
+import {
+  appendCompaction,
+  appendMessage,
+  createSession,
+  listSessions,
+  loadSession,
+  newSessionId,
+  type SessionMeta,
+} from './session.ts'
 import { createDefaultTools } from './tools/index.ts'
-import type { AgentEvent } from './types.ts'
+import type { AgentEvent, ChatMessage } from './types.ts'
 
 interface CliOptions {
   prompt?: string
@@ -27,6 +36,8 @@ interface CliOptions {
   root?: string
   setup: boolean
   listProviders: boolean
+  continueLast: boolean
+  resumeId: string | undefined
   yes: boolean
   stream: boolean
   verbose: boolean
@@ -48,6 +59,8 @@ Options:
       --root <dir>         workspace root tools may touch (default: cwd)
       --setup              (re)run the interactive provider + key setup
       --list-providers     print the provider presets and exit
+  -c, --continue            resume the most recent interactive session
+      --resume <id>         resume a specific session by id (prefix match)
       --yes                auto-approve every tool action (dangerous: no confirmations)
   -s, --stream             stream the final answer token-by-token (default on)
       --no-stream          disable streaming
@@ -69,7 +82,7 @@ Examples:
 `
 
 function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = { setup: false, listProviders: false, yes: false, stream: true, verbose: false, help: false }
+  const options: CliOptions = { setup: false, listProviders: false, continueLast: false, resumeId: undefined, yes: false, stream: true, verbose: false, help: false }
   const positional: string[] = []
 
   for (let index = 0; index < argv.length; index++) {
@@ -100,6 +113,13 @@ function parseArgs(argv: string[]): CliOptions {
         break
       case '--list-providers':
         options.listProviders = true
+        break
+      case '--continue':
+      case '-c':
+        options.continueLast = true
+        break
+      case '--resume':
+        options.resumeId = next()
         break
       case '--yes':
       case '-y':
@@ -284,13 +304,56 @@ interface SessionConfig {
   root: string
 }
 
-async function repl(session: SessionConfig & { yes?: boolean }): Promise<void> {
+/**
+ * Tracks which session file the interactive run is appending to. `id` changes
+ * when the user switches or starts a session; `on` gates one-shot prompt mode
+ * (which never persists).
+ */
+interface SessionStore {
+  id: string | undefined
+  createdAt: string | undefined
+  on: boolean
+}
+
+async function repl(session: SessionConfig & { yes?: boolean; store?: SessionStore }): Promise<void> {
   const { agent, verbose } = session
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   if (!session.yes) {
     agent.setApprover(makeApprover(rl, { remembered: new Set<string>() }))
   }
-  console.log('hi-agent interactive mode. Commands: /reset, /model, exit. Ctrl+C quits.')
+
+  // Interactive runs persist: create the session file lazily on first turn,
+  // then append every message the agent records.
+  const store: SessionStore = session.store ?? { id: undefined, createdAt: undefined, on: true }
+  const configDir = globalConfigDir()
+  const ensureSession = async (): Promise<void> => {
+    if (!store.on) return
+    if (store.id) {
+      // Resumed session: backfill createdAt from the file header once.
+      if (!store.createdAt) {
+        const loaded = await loadSession(configDir, store.id)
+        store.createdAt = loaded?.header.createdAt ?? new Date().toISOString()
+      }
+      return
+    }
+    store.id = newSessionId()
+    store.createdAt = new Date().toISOString()
+    await createSession(configDir, store.id, session.model)
+  }
+  const record = async (message: ChatMessage): Promise<void> => {
+    if (!store.id || !store.on) return
+    await appendMessage(configDir, store.id, message)
+  }
+  const recordReplace = async (history: readonly ChatMessage[]): Promise<void> => {
+    if (!store.id || !store.on) return
+    await appendCompaction(configDir, store.id, history)
+  }
+  agent.setPersistenceHooks(
+    (message) => void record(message),
+    (history) => void recordReplace(history),
+  )
+
+  console.log('hi-agent interactive mode. Commands: /reset, /model, /session, /compact, exit. Ctrl+C quits.')
   try {
     for (;;) {
       let line: string
@@ -307,6 +370,14 @@ async function repl(session: SessionConfig & { yes?: boolean }): Promise<void> {
         console.log(color(DIM, '(history cleared)'))
         continue
       }
+      if (input === '/session' || input.startsWith('/session ')) {
+        const handled = await handleSessionCommand(
+          session, store, rl, input.slice('/session'.length).trim(),
+        )
+        if (handled) continue
+        // fall through: unknown subcommand was reported inside
+        continue
+      }
       if (input === '/model' || input.startsWith('/model ')) {
         await switchModel(session, rl, input.slice('/model'.length).trim())
         continue
@@ -317,6 +388,7 @@ async function repl(session: SessionConfig & { yes?: boolean }): Promise<void> {
         continue
       }
       try {
+        await ensureSession()
         const result = await agent.run(input)
         if (result.stopReason !== 'final') console.log()
       } catch (error) {
@@ -327,6 +399,66 @@ async function repl(session: SessionConfig & { yes?: boolean }): Promise<void> {
     rl.close()
   }
   if (verbose) console.log(color(DIM, 'bye'))
+}
+
+/** /session — list, switch, new. */
+async function handleSessionCommand(
+  session: SessionConfig,
+  store: SessionStore,
+  rl: ReturnType<typeof createInterface>,
+  args: string,
+): Promise<boolean> {
+  const configDir = globalConfigDir()
+  const agent = session.agent
+
+  if (args === '') {
+    const metas = await listSessions(configDir)
+    if (metas.length === 0) {
+      console.log(color(DIM, '(no saved sessions)'))
+      return true
+    }
+    console.log('Sessions (newest first):')
+    for (const [index, meta] of metas.entries()) {
+      const current = meta.id === store.id ? color(GREEN, ' *') : ''
+      const when = meta.updatedAt.slice(0, 16).replace('T', ' ')
+      console.log(`  ${index + 1}. ${meta.id}  ${when}  ${meta.messageCount} msgs  ${meta.model}${current}`)
+      if (meta.title) console.log(color(DIM, `     ${meta.title}`))
+    }
+    return true
+  }
+
+  if (args === 'new') {
+    store.id = undefined // next turn creates a fresh file
+    agent.reset()
+    console.log(color(DIM, '(new session; previous kept on disk)'))
+    return true
+  }
+
+  // /session <number|id>
+  const metas = await listSessions(configDir)
+  let target: SessionMeta | undefined
+  const asNumber = Number(args)
+  if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= metas.length) {
+    target = metas[asNumber - 1]
+  } else {
+    const needle = args.toLowerCase()
+    target = metas.find((meta) => meta.id.toLowerCase() === needle)
+      ?? metas.find((meta) => meta.id.toLowerCase().startsWith(needle))
+  }
+  if (!target) {
+    console.log(color(RED, `No session matches "${args}". Use /session to list.`))
+    return true
+  }
+  const loaded = await loadSession(configDir, target.id)
+  if (!loaded) {
+    console.log(color(RED, `Session ${target.id} could not be loaded.`))
+    return true
+  }
+  agent.restoreHistory(loaded.history)
+  store.id = target.id
+  store.createdAt = loaded.header.createdAt
+  console.log(color(DIM, `(switched to ${target.id}: ${loaded.history.length} messages)`))
+  return true
 }
 
 async function switchModel(session: SessionConfig, rl: ReturnType<typeof createInterface>, preset: string): Promise<void> {
@@ -529,6 +661,46 @@ async function main(): Promise<void> {
 
   const approvalSession = { remembered: new Set<string>() }
 
+  // --continue / --resume: load a previous session's history before the loop.
+  let resumeHistory: ChatMessage[] | undefined
+  let resumeSessionId: string | undefined
+  if (options.continueLast || options.resumeId !== undefined) {
+    try {
+      const metas = await listSessions(globalConfigDir())
+      let target: SessionMeta | undefined
+      if (options.resumeId !== undefined) {
+        const needle = options.resumeId.toLowerCase()
+        target = metas.find((meta) => meta.id.toLowerCase() === needle)
+          ?? metas.find((meta) => meta.id.toLowerCase().startsWith(needle))
+        if (!target) {
+          console.error(color(RED, `error: no session matches "${options.resumeId}".`))
+          process.exitCode = 1
+          return
+        }
+      } else {
+        target = metas[0]
+        if (!target) {
+          console.error(color(RED, 'error: no saved sessions to continue.'))
+          process.exitCode = 1
+          return
+        }
+      }
+      const loaded = await loadSession(globalConfigDir(), target.id)
+      if (!loaded) {
+        console.error(color(RED, `error: session ${target.id} could not be loaded.`))
+        process.exitCode = 1
+        return
+      }
+      resumeHistory = loaded.history
+      resumeSessionId = target.id
+      console.log(color(DIM, `(resumed session ${target.id}: ${loaded.history.length} messages)`))
+    } catch (error) {
+      console.error(color(RED, `error: ${error instanceof Error ? error.message : String(error)}`))
+      process.exitCode = 1
+      return
+    }
+  }
+
   const agent = new Agent({
     llm: new OpenAICompatibleLLM({
       apiKey: config.apiKey,
@@ -543,6 +715,10 @@ async function main(): Promise<void> {
     ...(config.contextWindow ? { compaction: { contextWindow: config.contextWindow } } : {}),
     onEvent: (event) => renderEvent(event, verbose),
   })
+
+  if (resumeHistory) {
+    agent.restoreHistory(resumeHistory)
+  }
 
   if (options.yes) {
     // Auto-approve everything (--yes): for trusted containers/CI only.
@@ -582,6 +758,10 @@ async function main(): Promise<void> {
     model: config.model,
     root,
     yes: options.yes,
+    // A resumed session keeps appending to its original file.
+    store: resumeSessionId
+      ? { id: resumeSessionId, createdAt: undefined, on: true }
+      : undefined,
   })
 }
 

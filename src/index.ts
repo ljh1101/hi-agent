@@ -31,6 +31,18 @@ export {
 } from './config.ts'
 export { LLMError, OpenAICompatibleLLM, type OpenAICompatibleOptions } from './llm.ts'
 export {
+  appendCompaction,
+  appendMessage,
+  createSession,
+  deleteSession,
+  listSessions,
+  loadSession,
+  newSessionId,
+  sessionsDir,
+  type LoadedSession,
+  type SessionMeta,
+} from './session.ts'
+export {
   derivePrefixRule,
   evaluate,
   matchesPrefix,

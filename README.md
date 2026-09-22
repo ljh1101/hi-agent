@@ -218,6 +218,7 @@ src/
   agent.ts             the loop, history management, tool execution, error recovery
   llm.ts               OpenAI-compatible client + retry/backoff + SSE streaming
   context.ts           request projection + token accounting + LLM compaction
+  session.ts           JSONL session persistence (list / switch / resume)
   config.ts            global vs project config loading + secret resolution
   providers.ts         provider presets + `/models` discovery
   permissions.ts       shell prefix permission rules (allow / deny, deny wins)

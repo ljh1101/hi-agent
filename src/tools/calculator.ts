@@ -203,6 +203,7 @@ export const calculatorTool: Tool<{ expression: string }> = {
     'Evaluate an arithmetic expression exactly. Use this instead of doing mental math. ' +
     'Supports + - * / % ^, parentheses, the functions sqrt/abs/round/floor/ceil/min/max/pow/log/sin/cos/tan, ' +
     'and the constants pi and e.',
+  promptSnippet: 'exact arithmetic; use it instead of computing numbers yourself',
   parameters: {
     type: 'object',
     properties: {

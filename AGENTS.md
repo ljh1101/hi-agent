@@ -35,6 +35,7 @@ Hard constraints — violating any of these is a regression:
 | `src/agent.ts` | The loop, history, tool execution, error recovery | Do not add business logic here |
 | `src/llm.ts` | OpenAI-compatible client + retry/backoff + SSE streaming | Swap providers by editing this file only |
 | `src/context.ts` | Request projection + token accounting + LLM compaction | History is the source of truth; the model only ever sees a projection. Compaction is the one operation that intentionally rewrites history — failure must leave it untouched |
+| `src/prompts/system.ts` | System prompt assembly: identity, tools section, rules | Tools section is built from each tool's `promptSnippet`/`promptGuidelines`; prompt copy lives here, not in `agent.ts` |
 | `src/session.ts` | JSONL session persistence | Appends are the common case; compaction APPENDS a snapshot line (pre-compaction lines stay on disk, replay resumes from the last snapshot). One-shot prompt mode never persists |
 | `src/config.ts` | Config layering (CLI > env > project > global) | Secrets resolve here, never in the loop |
 | `src/providers.ts` | Provider presets + `/models` listing | |
@@ -53,7 +54,8 @@ These rules are the project's soul. Do not "optimize" them away:
 2. **The model is just an interface.** `LLM` has `chat` plus an optional
    `stream`. Swapping providers means changing `src/llm.ts`, never the loop.
 3. **Tools are just objects.** A tool is a name + description + JSON Schema +
-   `execute`. There is no plugin system.
+   `execute` (plus optional `promptSnippet`/`promptGuidelines` that feed the
+   system prompt's tools section). There is no plugin system.
 4. **History is truth, requests are projections.** `agent.history` keeps full
    fidelity (base for persistence/rewind). Everything the model sees goes
    through `projectHistory`; never mutate stored messages. The single

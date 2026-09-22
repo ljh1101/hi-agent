@@ -92,11 +92,13 @@ test('multi-step run: tool call, observation, second tool call, final answer', a
           events.filter((event) => event.type === 'tool_result').every((event) => event.type === 'tool_result' && !event.isError),
         )
 
-        // History is a well-formed tool-calling transcript.
+        // History is a well-formed tool-calling transcript (one system prompt).
         assert.deepEqual(
           agent.history.map((message) => message.role),
-          ['system', 'system', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant'],
+          ['system', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant'],
         )
+        // The system prompt carries the tools section built from snippets.
+        assert.match(agent.history[0]!.content ?? '', /# Tools/)
       },
     )
   } finally {

@@ -7,6 +7,7 @@
 export const currentTimeTool: Tool<Record<string, never>> = {
   name: 'current_time',
   description: 'Get the current date and time, in ISO 8601 (UTC) and local time.',
+  promptSnippet: 'the current date/time; call it whenever "now" matters',
   parameters: {
     type: 'object',
     properties: {},

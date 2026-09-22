@@ -94,6 +94,11 @@ export const readFileTool: Tool<{ path: string; offset?: number; limit?: number 
     'Read a UTF-8 text file and return its contents. Paths are relative to the workspace root. ' +
     'Optionally read a line range: `offset` is the 1-based first line to return, ' +
     '`limit` is the maximum number of lines. Lines are numbered in the output when a range is given.',
+  promptSnippet: 'read a file, or a line range of a file',
+  promptGuidelines: [
+    'To explore code: glob/grep first to find candidates, then read_file the promising ones.',
+    'For large files use grep to locate, then read_file with offset/limit around the match instead of reading the whole file.',
+  ],
   parameters: {
     type: 'object',
     properties: {
@@ -150,6 +155,10 @@ export const writeFileTool: Tool<{ path: string; content: string }> = {
   name: 'write_file',
   description:
     'Create or overwrite a UTF-8 text file with the given content. Parent directories are created automatically. Paths are relative to the workspace root.',
+  promptSnippet: 'create a new file or replace one entirely',
+  promptGuidelines: [
+    'For changing a few lines of an existing file, prefer edit over rewriting it with write_file.',
+  ],
   parameters: {
     type: 'object',
     properties: {
@@ -187,6 +196,7 @@ export const listDirTool: Tool<{ path?: string }> = {
   name: 'list_dir',
   description:
     'List the entries of a directory, one per line, marked as [dir] or [file] with sizes. Defaults to the workspace root.',
+  promptSnippet: 'see what lives in one directory',
   parameters: {
     type: 'object',
     properties: {

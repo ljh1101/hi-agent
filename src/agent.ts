@@ -24,17 +24,9 @@ import {
   type ContextOptions,
   type ResolvedCompactionOptions,
 } from './context.ts'
+import { buildDefaultSystemPrompt } from './prompts/system.ts'
 
-export const DEFAULT_SYSTEM_PROMPT = [
-  'You are hi-agent, a general-purpose assistant that solves tasks by calling tools.',
-  '',
-  'Rules:',
-  '- Think step by step, but keep your visible replies short.',
-  '- Call a tool whenever it would give you a fact you are unsure about; never guess.',
-  '- You may call several tools in one turn when they are independent.',
-  '- After the tools have given you enough information, reply with the final answer as plain text.',
-  '- If a tool returns an error, read it carefully and try a different approach.',
-].join('\n')
+export { DEFAULT_SYSTEM_PROMPT, buildDefaultSystemPrompt, buildToolsSection } from './prompts/system.ts'
 
 export interface AgentOptions {
   llm: LLM
@@ -132,17 +124,15 @@ export class Agent {
     this.persistenceOnAppend = options.onAppend
     this.persistenceOnReplace = options.onReplace
 
+    // One system message assembled from identity, the tools section (built
+    // from each tool's promptSnippet/promptGuidelines), and behavior rules.
+    // A user-supplied prompt replaces the whole assembly.
     const systemPrompt =
-      options.systemPrompt === undefined ? DEFAULT_SYSTEM_PROMPT : options.systemPrompt
+      options.systemPrompt === undefined
+        ? buildDefaultSystemPrompt(this.registry.list())
+        : options.systemPrompt
     if (systemPrompt) {
       this.history.push({ role: 'system', content: systemPrompt })
-    }
-    if (this.registry.names().length > 0) {
-      // Nudge the model with an explicit inventory of what it can call.
-      this.history.push({
-        role: 'system',
-        content: `Available tools: ${this.registry.names().join(', ')}.`,
-      })
     }
   }
 

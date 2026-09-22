@@ -123,6 +123,10 @@ export const globTool: Tool<{ pattern: string; path?: string }> = {
   description:
     'Find files whose path matches a glob pattern, e.g. "**/*.ts" or "src/*.{js,ts}". ' +
     'Returns relative paths. Use this to locate files by name before reading them.',
+  promptSnippet: 'find files by name pattern',
+  promptGuidelines: [
+    'Prefer glob and grep over shell ls/find/grep: they need no approval and return compact results.',
+  ],
   parameters: {
     type: 'object',
     properties: {
@@ -174,6 +178,7 @@ export const grepTool: Tool<{
     'Search file contents for a regular expression and return matching lines with file:line. ' +
     'Searches the workspace root (or the given directory). Use this to find code or text by content. ' +
     'Set `context` to also return that many lines before and after each match.',
+  promptSnippet: 'find where specific content appears, with file:line to follow up on',
   parameters: {
     type: 'object',
     properties: {

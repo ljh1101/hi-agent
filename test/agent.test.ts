@@ -163,20 +163,24 @@ test('emits progress events in order', async () => {
   ])
 })
 
-test('seeds the system prompt and tool inventory, and reset() keeps system messages', async () => {
+test('seeds an assembled system prompt (identity, tools section, rules)', async () => {
   const llm = new ScriptedLLM([reply('ok')])
   const agent = new Agent({ llm, tools: [echoTool] })
 
-  assert.equal(agent.history.length, 2)
-  assert.equal(agent.history[0]?.content, DEFAULT_SYSTEM_PROMPT)
-  assert.match(agent.history[1]?.content ?? '', /Available tools: echo/)
+  // One system message now: identity + tools section + rules.
+  assert.equal(agent.history.length, 1)
+  const prompt = agent.history[0]!.content ?? ''
+  assert.match(prompt, /You are hi-agent/)
+  assert.match(prompt, /# Tools/)
+  assert.match(prompt, /- echo\b/)
+  assert.match(prompt, /# Rules/)
 
   await agent.run('hi')
-  assert.equal(agent.history.length, 4)
+  assert.equal(agent.history.length, 3)
 
   agent.reset()
-  assert.equal(agent.history.length, 2)
-  assert.ok(agent.history.every((message) => message.role === 'system'))
+  assert.equal(agent.history.length, 1)
+  assert.equal(agent.history[0]!.role, 'system')
 })
 
 test('systemPrompt: null disables the prompt entirely', async () => {

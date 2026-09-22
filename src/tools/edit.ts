@@ -38,6 +38,12 @@ export const editTool: Tool<{ path: string; old_string: string; new_string: stri
     required: ['path', 'old_string', 'new_string'],
     additionalProperties: false,
   },
+  permission: 'write',
+  promptSnippet: 'change a span of an existing file by exact string replacement',
+  promptGuidelines: [
+    'Before editing, read the exact current text with read_file; old_string must match it character-for-character.',
+    'If edit reports multiple matches, include more surrounding lines to make old_string unique.',
+  ],
   async execute({ path: target, old_string, new_string }, ctx) {
     if (typeof old_string !== 'string' || old_string === '') {
       throw new Error('"old_string" must be a non-empty string')

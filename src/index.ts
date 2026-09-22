@@ -1,4 +1,9 @@
-﻿export { Agent, DEFAULT_SYSTEM_PROMPT, type AgentOptions } from './agent.ts'
+﻿export { Agent, type AgentOptions } from './agent.ts'
+export {
+  buildDefaultSystemPrompt,
+  buildToolsSection,
+  DEFAULT_SYSTEM_PROMPT,
+} from './prompts/system.ts'
 export {
   contextUsage,
   estimateTokens,

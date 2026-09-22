@@ -128,6 +128,14 @@ export interface Tool<Args = Record<string, unknown>> extends ToolDefinition {
   timeoutMs?: number
   /** Risk level. `read` tools run without approval; others may gate on it. */
   permission?: ToolPermission
+  /**
+   * One-line "what am I for" shown in the system prompt's tools section.
+   * This is usage guidance (when to reach for this tool, how it cooperates
+   * with siblings), not parameter detail — parameters live in the schema.
+   */
+  promptSnippet?: string
+  /** Extra behavior rules this tool contributes to the system prompt. */
+  promptGuidelines?: readonly string[]
 }
 
 /** Progress events emitted by the agent loop, for UIs and logging. */

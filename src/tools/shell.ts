@@ -337,6 +337,15 @@ export function createShellTool(options: ShellToolOptions = {}): Tool<{
   },
   timeoutMs: AGENT_FALLBACK_TIMEOUT_MS,
   permission: 'dangerous',
+  promptSnippet:
+    'run shell commands (tests, builds, git, installs); read-only commands run ' +
+    'without approval, anything else asks the user first',
+  promptGuidelines: [
+    'Reach for shell only when no dedicated tool fits (running tests/builds, git, installing deps).',
+    'Prefer glob/grep/read_file/edit over shell ls/find/grep/cat/sed: they need no approval.',
+    'Chain dependent commands with && in one call instead of several sequential calls.',
+    'If the user denies a command, do not rephrase it to dodge the denial; ask them instead.',
+  ],
   async execute({ command, timeout, workdir }, ctx) {
     if (typeof command !== 'string' || command.trim() === '') {
       throw new Error('"command" must be a non-empty string')

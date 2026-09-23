@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import path, { join } from 'node:path'
 import type { Tool } from '../types.ts'
 import { EMPTY_RULES, evaluate, type PermissionRules } from '../permissions.ts'
 import { resolveInsideRoot } from './filesystem.ts'
@@ -15,11 +15,20 @@ const AGENT_FALLBACK_TIMEOUT_MS = (MAX_TIMEOUT_SECONDS + 5) * 1000
 const MAX_LINES = 2000
 const MAX_BYTES = 50 * 1024
 
+const IS_WINDOWS = process.platform === 'win32'
+
 /**
  * Built-in read-only commands that run without approval, mirroring Claude
  * Code's approach. A command is read-only only when *every* part of it (every
  * subcommand of a compound command) is read-only, has no redirection, and does
  * not contain command substitution.
+ *
+ * This set is shared by both dialects and stays valid on Windows: there these
+ * names resolve to PowerShell aliases (`ls` → Get-ChildItem, `type` →
+ * Get-Content, `diff` → Compare-Object, `sort` → Sort-Object), all read-only,
+ * and where a name does not exist (`head`, `wc`, `which`, ...) it costs one
+ * failed call, never an approval prompt. A GNU coreutils install on PATH is
+ * read-only for the same names.
  */
 const READ_ONLY_COMMANDS = new Set([
   'ls',
@@ -59,30 +68,142 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set([
 ])
 
 /**
+ * Read-only PowerShell commands, added on top of the shared set on Windows.
+ *
+ * PowerShell resolves command names case-insensitively, so the lookup
+ * lowercases the program name first. Every entry is either a cmdlet that only
+ * reads or an alias whose definition is one of those cmdlets (checked against
+ * `Get-Alias`). The dangerous aliases are deliberately absent: `rm`/`del`
+ * (Remove-Item), `sc` (Set-Content), `set` (Set-Variable), `ac`, `ni`, `si`,
+ * `sp`, `mv`, `cp`, `iex` (Invoke-Expression), `ii` (Invoke-Item), `tee`
+ * (Tee-Object), and `where` (Where-Object — a script-block filter, not a
+ * command lookup; the external tool is `where.exe`).
+ */
+const POWERSHELL_READ_ONLY_COMMANDS = new Set([
+  // Cmdlets that only read.
+  'get-childitem',
+  'get-content',
+  'get-item',
+  'get-itemproperty',
+  'get-location',
+  'get-command',
+  'get-help',
+  'get-member',
+  'get-date',
+  'get-variable',
+  'get-alias',
+  'get-process',
+  'get-service',
+  'get-module',
+  'get-psdrive',
+  'get-filehash',
+  'get-acl',
+  'get-culture',
+  'get-uiculture',
+  'get-host',
+  'get-history',
+  'get-random',
+  'select-string',
+  'select-object',
+  'sort-object',
+  'measure-object',
+  'compare-object',
+  'group-object',
+  'test-path',
+  'resolve-path',
+  'split-path',
+  'join-path',
+  'convertto-json',
+  'convertfrom-json',
+  'convertto-csv',
+  'convertfrom-csv',
+  'format-list',
+  'format-table',
+  'format-wide',
+  'format-custom',
+  'out-string',
+  'out-host',
+  'write-output',
+  'write-host',
+  'write-verbose',
+  'write-warning',
+  // Read-only aliases of the cmdlets above.
+  'ls',
+  'dir',
+  'gci',
+  'cat',
+  'gc',
+  'type',
+  'pwd',
+  'gl',
+  'echo',
+  'write',
+  'gm',
+  'sls',
+  'select',
+  'measure',
+  'compare',
+  'group',
+  'ft',
+  'fl',
+  'fw',
+  'fc',
+  'json',
+  // External tools shipped with Windows that only read.
+  'findstr',
+  'tree',
+  'where.exe',
+  'hostname',
+  'whoami',
+])
+
+/** `git remote` subcommands that rewrite `.git/config`. */
+const GIT_REMOTE_WRITE_SUBCOMMANDS = /\bremote\s+(add|remove|rm|rename|set-url|set-head|set-branches|prune|update)\b/
+
+/**
  * Whether a single subcommand is safe to run without approval.
  *
  * Command substitutions (`$(...)`, backticks) and file redirections make the
  * command non-read-only outright. Descriptor redirections (`2>&1`, `>&2`) and
- * `/dev/null` are harmless and allowed. Write-capable flags on otherwise
- * read-only commands (`find -delete`, `git branch -D`) also disqualify.
+ * redirects into the null device are harmless and allowed. Write-capable flags
+ * on otherwise read-only commands (`find -delete`, `sort -o`, `git branch -D`)
+ * also disqualify, as do PowerShell script blocks: `{...}` and `@...` are code,
+ * and cmdlets such as `Sort-Object` and `Select-Object` evaluate the script
+ * blocks they are handed.
  */
 function isReadOnlySubcommand(command: string): boolean {
   // Command substitution can execute anything; never whitelist it.
   if (command.includes('$(') || command.includes('`')) return false
+  // In PowerShell a script block, a splat and a parenthesized subexpression are
+  // code, not data: `Write-Output (Remove-Item x)` runs Remove-Item, and
+  // `Sort-Object { ... }` evaluates its script block. Quoted text is exempt, so
+  // a regex like `Select-String "a(b)c"` stays whitelisted.
+  if (IS_WINDOWS && /[(@{]/.test(withoutQuotedText(command))) return false
   // File redirections read or write files; never whitelist them.
   if (hasFileRedirection(command)) return false
 
-  const { program, subcommand } = commandLeaders(command)
-  // Path-prefixed programs (/bin/rm, ./script) are never whitelisted.
-  if (program === '' || program.includes('/')) return false
+  const leaders = commandLeaders(command)
+  // Path-prefixed programs (/bin/rm, C:\tools\x.exe, ./script) are never
+  // whitelisted. PowerShell command lookup is case-insensitive.
+  const program = IS_WINDOWS ? leaders.program.toLowerCase() : leaders.program
+  const subcommand = IS_WINDOWS ? leaders.subcommand?.toLowerCase() : leaders.subcommand
+  if (program === '' || program.includes('/') || program.includes('\\')) return false
 
   if (program === 'git') {
     if (!subcommand || !READ_ONLY_GIT_SUBCOMMANDS.has(subcommand)) return false
     // Write-capable flags on read-only git subcommands (e.g. `branch -D`).
     if (subcommand === 'branch' && /\s-D\b|\s-d\b|\s--delete\b/.test(command)) return false
     if (subcommand === 'tag' && /\s-d\b|\s--delete\b/.test(command)) return false
+    // `git remote add|set-url|...` rewrites .git/config.
+    if (subcommand === 'remote' && GIT_REMOTE_WRITE_SUBCOMMANDS.test(command)) return false
     // `git log --output=FILE` writes an arbitrary file.
     if (/\s--output(-\w+)*(=|\s)/.test(command)) return false
+    return true
+  }
+
+  if (program === 'sort') {
+    // `sort -o FILE` (and the bundled `-ro FILE`) writes an arbitrary file.
+    if (/(^|\s)-[A-Za-z]*o|\s--output(=|\s|$)/.test(command)) return false
     return true
   }
 
@@ -98,21 +219,46 @@ function isReadOnlySubcommand(command: string): boolean {
     return true
   }
 
+  if (IS_WINDOWS) {
+    // Parameters that act outside the workspace or never terminate, on cmdlets
+    // that are otherwise read-only. PowerShell parameter names are
+    // case-insensitive, so these matches are too.
+    if (program === 'get-help' && /\s-online\b/i.test(command)) return false
+    if (program === 'get-content' && /\s-wait\b/i.test(command)) return false
+    if (POWERSHELL_READ_ONLY_COMMANDS.has(program)) return true
+  }
+
   return READ_ONLY_COMMANDS.has(program)
 }
 
 /**
+ * Strip quoted strings, so a syntax check sees only the text the shell itself
+ * would parse. `Select-String "a(b)c" file` searches for a literal, and the
+ * parentheses inside the quotes must not be read as a subexpression.
+ */
+function withoutQuotedText(command: string): string {
+  return command.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '')
+}
+
+/**
  * Detect a redirection to a real file. Descriptor duplications (`2>&1`,
- * `>&2`) and redirects into `/dev/null` are safe; anything else (`> file`,
- * `>> file`, `< file`, `2> file`) targets a file and needs approval.
+ * `>&2`) and redirects into the null device (`/dev/null`, PowerShell `$null`,
+ * Windows `nul`) are safe; anything else (`> file`, `>> file`, `< file`,
+ * `2> file`) targets a file and needs approval.
  */
 function hasFileRedirection(command: string): boolean {
   // Strip quoted strings first so `echo "a > b"` does not count.
-  const unquoted = command.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '')
-  // Remove harmless forms: fd duplication (`>&N`, `N>&M`) and /dev/null targets.
-  const harmless = unquoted
+  let harmless = withoutQuotedText(command)
     .replace(/\d*>&\d+/g, '')
     .replace(/>>?\s*\/dev\/null/g, '')
+  // `$null` and `nul` are null devices only on Windows; elsewhere they are
+  // ordinary names (`$null` is not even a name), and `nul.txt` is an ordinary
+  // file name everywhere.
+  if (IS_WINDOWS) {
+    harmless = harmless
+      .replace(/>>?\s*\$null(?![A-Za-z0-9_])/gi, '')
+      .replace(/>>?\s*nul(?![A-Za-z0-9_.])/gi, '')
+  }
   return /\d*(>>|>|<)/.test(harmless)
 }
 
@@ -126,24 +272,84 @@ export function isReadOnlyCommand(command: string): boolean {
   return parts.every((part) => isReadOnlySubcommand(part))
 }
 
-/** A shell invocation: the executable and its argument vector. */
+/** A shell invocation: the executable, its fixed arguments, and a command prefix. */
 interface ShellConfig {
   shell: string
   args: string[]
+  /** Text prepended to every command (only used for Windows PowerShell 5.1). */
+  prefix: string
 }
 
 /**
- * Resolve the platform's default shell.
+ * Pin PowerShell's own output encoding to UTF-8.
  *
- * Windows: `cmd.exe` (always present, no Git Bash requirement). Unix: `bash`
- * with a fallback to `sh`.
+ * Measured on a Chinese Windows: `[Console]::OutputEncoding` is `gb2312` in
+ * both pwsh 7 and 5.1, while the collector decodes UTF-8 — so every PowerShell
+ * error message arrived as `�Ҳ���·����...` and the model could not read it.
+ * The preamble must stay on line 1 so error line numbers remain accurate.
+ * Legacy native tools still write the OEM code page; that part is not fixable
+ * from here, because their bytes never pass through PowerShell's encoder.
  */
-function resolveShell(): ShellConfig {
-  if (process.platform === 'win32') {
-    return { shell: process.env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c'] }
+const POWERSHELL_ENCODING_PREAMBLE =
+  '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ' +
+  '$OutputEncoding = [System.Text.UTF8Encoding]::new($false); '
+
+/**
+ * Resolve the PowerShell executable to run.
+ *
+ * Order: PowerShell 7 where an installer would put it, then `pwsh.exe` on PATH
+ * (a Microsoft Store install has no `Program Files` entry, only a `WindowsApps`
+ * execution alias), then the Windows PowerShell 5.1 that ships with the OS.
+ *
+ * `exists` is injected so the order can be tested without spawning anything.
+ */
+export function resolvePowerShellPath(
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (candidate: string) => boolean = existsSync,
+): string {
+  const programFiles = env.ProgramFiles ?? env.ProgramW6432 ?? 'C:\\Program Files'
+  const installed = path.win32.join(programFiles, 'PowerShell', '7', 'pwsh.exe')
+  if (exists(installed)) return installed
+
+  const pathValue = env.PATH ?? env.Path ?? ''
+  for (const dir of pathValue.split(path.win32.delimiter)) {
+    if (dir === '') continue
+    const candidate = path.win32.join(dir, 'pwsh.exe')
+    if (exists(candidate)) return candidate
   }
-  if (existsSync('/bin/bash')) return { shell: '/bin/bash', args: ['-c'] }
-  return { shell: 'sh', args: ['-c'] }
+
+  return path.win32.join(
+    env.SystemRoot ?? 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  )
+}
+
+/**
+ * Resolve the platform's shell.
+ *
+ * Windows: PowerShell (`pwsh` 7, else the bundled 5.1) — `cmd.exe` is
+ * deliberately not used, because its dialect, quoting and OEM code page all
+ * differ from what the model writes. Unix: `bash`, else `sh`.
+ */
+let cachedShell: ShellConfig | undefined
+
+function resolveShell(): ShellConfig {
+  if (cachedShell) return cachedShell
+  if (IS_WINDOWS) {
+    cachedShell = {
+      shell: resolvePowerShellPath(),
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command'],
+      prefix: POWERSHELL_ENCODING_PREAMBLE,
+    }
+    return cachedShell
+  }
+  cachedShell = existsSync('/bin/bash')
+    ? { shell: '/bin/bash', args: ['-c'], prefix: '' }
+    : { shell: 'sh', args: ['-c'], prefix: '' }
+  return cachedShell
 }
 
 /**
@@ -193,12 +399,15 @@ async function runCommand(
   timeoutMs: number,
   signal: AbortSignal | undefined,
 ): Promise<{ exitCode: number | null; text: string; truncated: boolean; timedOut: boolean }> {
-  const { shell, args } = resolveShell()
+  const { shell, args, prefix } = resolveShell()
+  // PowerShell parses the command text itself: pass it as ONE argv element and
+  // let Node do the Windows quoting (PowerShell understands the `\"` escape).
+  const full = `${prefix}${command}`
 
   return new Promise((resolve, reject) => {
-    const child = spawn(shell, [...args, command], {
+    const child = spawn(shell, [...args, full], {
       cwd,
-      detached: process.platform !== 'win32',
+      detached: !IS_WINDOWS,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -315,15 +524,24 @@ export function createShellTool(options: ShellToolOptions = {}): Tool<{
   workdir?: string
 }> {
   const rules = options.rules ?? EMPTY_RULES
+  // The model must know which dialect it is writing: `ls` is a wasted round-trip
+  // on Windows and `Get-ChildItem` is a wasted one everywhere else.
+  const dialect = IS_WINDOWS
+    ? 'Commands run through PowerShell: use PowerShell syntax and cmdlets ' +
+      '(Get-ChildItem, Get-Content, Select-String, $env:NAME), not cmd.exe batch syntax. '
+    : 'Commands run through bash: use POSIX syntax and paths. '
+  const readOnlyExamples = IS_WINDOWS
+    ? 'Read-only commands (Get-ChildItem, Get-Content, Select-String, git status, ...)'
+    : 'Read-only commands (ls, cat, grep, git status, ...)'
   return {
   name: 'shell',
   description:
     'Execute a shell command and return its stdout and stderr. Commands run inside ' +
-    'the workspace root (or `workdir` relative to it). Read-only commands (ls, cat, ' +
-    'grep, git status, ...) run without approval; anything else needs user approval. ' +
+    `the workspace root (or \`workdir\` relative to it). ${dialect}${readOnlyExamples} ` +
+    'run without approval; anything else needs user approval. ' +
     'Output is truncated to the last 2000 lines or 50KB; a non-zero exit code is ' +
     'reported as an error. Prefer the dedicated tools (read_file, glob, grep, edit) ' +
-    'over `ls`/`cat`/`grep` in the shell. If a command is denied, do not try to ' +
+    'over listing and searching with the shell. If a command is denied, do not try to ' +
     'rephrase or restructure it to dodge the denial; ask the user instead.',
   parameters: {
     type: 'object',

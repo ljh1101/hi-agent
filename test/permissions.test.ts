@@ -33,6 +33,13 @@ test('evaluate: allow requires every subcommand to match', () => {
   assert.equal(evaluate('ls && rm x', rules), 'ask', 'one unmatched part falls back to ask')
 })
 
+test('evaluate: a bare & compound is split like any other separator', () => {
+  const rules = parseRules({ allow: ['ls *'] })
+  assert.equal(evaluate('ls & ls -l', rules), 'allow')
+  assert.equal(evaluate('ls & rm x', rules), 'ask', 'the smuggled part must not inherit the allow rule')
+  assert.equal(evaluate('ls 2>&1', rules), 'allow', 'a redirection is not a separator')
+})
+
 test('parseRules drops invalid entries and tolerates junk', () => {
   const rules = parseRules({ allow: ['npm *', 42, '', null], deny: 'not-an-array' })
   assert.deepEqual(rules, { allow: ['npm *'], deny: [] })

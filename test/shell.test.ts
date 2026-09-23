@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { after, test } from 'node:test'
-import { isReadOnlyCommand, shellTool } from '../src/tools/shell.ts'
+import { isReadOnlyCommand, resolvePowerShellPath, shellTool } from '../src/tools/shell.ts'
 import type { ToolContext } from '../src/types.ts'
 
 const scratchDirs: string[] = []
@@ -15,6 +16,10 @@ async function makeRoot(): Promise<ToolContext> {
 
 const allowAll = async () => true
 const denyAll = async () => false
+const isWindows = process.platform === 'win32'
+
+/** A read-only listing command in the platform's own dialect. */
+const listCommand = isWindows ? 'Get-ChildItem -Name' : 'ls'
 
 after(async () => {
   await Promise.all(scratchDirs.map((dir) => rm(dir, { recursive: true, force: true })))
@@ -22,15 +27,38 @@ after(async () => {
 
 test('runs a command and returns its stdout', async () => {
   const ctx = await makeRoot()
-  const result = await shellTool.execute({ command: 'echo hello world' }, ctx)
+  // Quoted on purpose: PowerShell's `echo a b` writes a two-element array, one
+  // element per line, where bash's writes a single line.
+  const result = await shellTool.execute({ command: 'echo "hello world"' }, ctx)
   assert.match(result, /hello world/)
 })
 
 test('captures stderr and stdout together', async () => {
   const ctx = await makeRoot()
-  const result = await shellTool.execute({ command: 'echo out && echo err >&2' }, { ...ctx, approve: allowAll })
+  const command = `node -e "console.error('err'); console.log('out')"`
+  const result = await shellTool.execute({ command }, { ...ctx, approve: allowAll })
   assert.match(result, /out/)
   assert.match(result, /err/)
+})
+
+test('preserves double quotes instead of escaping them into the command', async () => {
+  // Regression: the shell once handed the command to `cmd.exe` through Node's
+  // Windows escaping, which turned `"` into `\"` — a form cmd.exe does not
+  // understand, so quotes leaked into the output or the command silently did
+  // nothing. PowerShell parses the command text itself, and this pins that the
+  // quotes reach the child verbatim.
+  const ctx = await makeRoot()
+  const command = `node -e "console.log('QUOTED_OK')"`
+  const result = await shellTool.execute({ command }, { ...ctx, approve: allowAll })
+  assert.match(result, /QUOTED_OK/)
+  assert.doesNotMatch(result, /\\"/)
+})
+
+test('returns non-ASCII output undamaged', async () => {
+  const ctx = await makeRoot()
+  const command = `node -e "console.log('中文 OK')"`
+  const result = await shellTool.execute({ command }, { ...ctx, approve: allowAll })
+  assert.match(result, /中文 OK/)
 })
 
 test('reports a non-zero exit code as an error', async () => {
@@ -44,7 +72,7 @@ test('reports a non-zero exit code as an error', async () => {
 test('runs in a workdir relative to the root', async () => {
   const ctx = await makeRoot()
   await writeFile(path.join(ctx.root, 'marker.txt'), 'here', 'utf8')
-  const result = await shellTool.execute({ command: 'ls', workdir: '.' }, ctx)
+  const result = await shellTool.execute({ command: listCommand, workdir: '.' }, ctx)
   assert.match(result, /marker\.txt/)
 })
 
@@ -58,8 +86,9 @@ test('refuses a workdir outside the workspace root', async () => {
 
 test('times out a hanging command and kills it', async () => {
   const ctx = await makeRoot()
+  const command = `node -e "setTimeout(function(){}, 5000)"`
   await assert.rejects(
-    async () => await shellTool.execute({ command: 'sleep 5', timeout: 1 }, { ...ctx, approve: allowAll }),
+    async () => await shellTool.execute({ command, timeout: 1 }, { ...ctx, approve: allowAll }),
     /timed out/,
   )
 })
@@ -67,7 +96,7 @@ test('times out a hanging command and kills it', async () => {
 test('truncates very large output to the tail', async () => {
   const ctx = await makeRoot()
   // Generate ~3000 lines; the last line is a unique marker.
-  const command = 'for i in $(seq 1 3000); do echo "line $i"; done; echo "TAIL_MARKER"'
+  const command = `node -e "for(let i=1;i<=3000;i++)console.log('line '+i);console.log('TAIL_MARKER')"`
   const result = await shellTool.execute({ command }, { ...ctx, approve: allowAll })
   assert.match(result, /TAIL_MARKER/)
   assert.match(result, /truncated/)
@@ -77,7 +106,8 @@ test('truncates very large output to the tail', async () => {
 
 test('returns a placeholder for no output', async () => {
   const ctx = await makeRoot()
-  const result = await shellTool.execute({ command: 'true' }, { ...ctx, approve: allowAll })
+  // `cd .` succeeds silently in both dialects and needs no approval.
+  const result = await shellTool.execute({ command: 'cd .' }, { ...ctx, approve: allowAll })
   assert.match(result, /no output/)
 })
 
@@ -115,6 +145,31 @@ test('compound commands with any risky part are classified risky', () => {
     'ls | rm x',
   ]) {
     assert.equal(isReadOnlyCommand(cmd), false, `expected risky: ${cmd}`)
+  }
+})
+
+test('a bare & separates commands in both dialects', () => {
+  // POSIX backgrounds the first command and runs the second; PowerShell 7's `&`
+  // is the background operator, so both halves run. Either way the second half
+  // must be classified, or `type a.txt & del a.txt` runs unapproved on the
+  // strength of its first word.
+  for (const cmd of [
+    'type a.txt & del a.txt',
+    'ls & rm -rf .',
+    'cat a & cat b && rm x',
+    'echo hi & Stop-Process -Name x',
+    'ls &rm x',
+    'ls& rm x',
+  ]) {
+    assert.equal(isReadOnlyCommand(cmd), false, `expected risky: ${cmd}`)
+  }
+  for (const cmd of [
+    'echo a & echo b',
+    'ls -l & pwd',
+    'git status & git log --oneline',
+    'echo "a & b"',
+  ]) {
+    assert.equal(isReadOnlyCommand(cmd), true, `expected read-only: ${cmd}`)
   }
 })
 
@@ -159,6 +214,153 @@ test('write-capable flags on whitelisted commands are classified risky', () => {
   ]) {
     assert.equal(isReadOnlyCommand(cmd), false, `expected risky: ${cmd}`)
   }
+})
+
+test('sort -o and git remote writes are classified risky', () => {
+  for (const cmd of [
+    'sort -o out.txt in.txt',
+    'sort -ro out.txt in.txt',
+    'sort --output=out.txt in.txt',
+    'sort --output out.txt in.txt',
+    'git remote add origin https://example.com/x.git',
+    'git remote set-url origin https://example.com/x.git',
+    'git remote remove origin',
+    'git remote prune origin',
+  ]) {
+    assert.equal(isReadOnlyCommand(cmd), false, `expected risky: ${cmd}`)
+  }
+  for (const cmd of ['sort -n in.txt', 'sort -u in.txt', 'git remote', 'git remote -v']) {
+    assert.equal(isReadOnlyCommand(cmd), true, `expected read-only: ${cmd}`)
+  }
+})
+
+test('the PowerShell dialect extends the whitelist only on Windows', () => {
+  const expected = isWindows
+  for (const cmd of [
+    'Get-ChildItem',
+    'Get-ChildItem -Recurse -Filter *.ts',
+    'Get-Content package.json',
+    'Select-String foo file.txt',
+    'get-childitem -Name',
+    'Test-Path package.json',
+    'Resolve-Path src',
+    'where.exe node',
+  ]) {
+    assert.equal(isReadOnlyCommand(cmd), expected, `expected ${expected} on ${process.platform}: ${cmd}`)
+  }
+  // `type` is read-only in every dialect (print a file, or where a program is).
+  assert.equal(isReadOnlyCommand('type package.json'), true)
+  // Writing aliases and cmdlets are never whitelisted.
+  for (const cmd of [
+    'del file.txt',
+    'rm file.txt',
+    'Remove-Item file.txt',
+    'Set-Content a.txt x',
+    'set x 1',
+    'sc a.txt x',
+    'ni a.txt',
+    'copy a b',
+    'attrib +r file.txt',
+  ]) {
+    assert.equal(isReadOnlyCommand(cmd), false, `expected risky: ${cmd}`)
+  }
+})
+
+test('PowerShell script blocks and splats are never whitelisted', () => {
+  // `Sort-Object { ... }` evaluates its script block, and `where` (Where-Object)
+  // is a filter, not a command lookup: a name-only whitelist would let
+  // `type a.txt | where { Remove-Item x }` through unapproved.
+  for (const cmd of [
+    'type a.txt | where { Remove-Item x }',
+    'Get-ChildItem . | Sort-Object { Remove-Item x }',
+    'Get-ChildItem | ForEach-Object { Remove-Item $_ }',
+    'Select-Object -Property { Remove-Item x }',
+    'Get-ChildItem @{Path="x"}',
+    'Get-ChildItem $(Get-Item x)',
+  ]) {
+    assert.equal(isReadOnlyCommand(cmd), false, `expected risky: ${cmd}`)
+  }
+})
+
+test('PowerShell parenthesized subexpressions are never whitelisted', () => {
+  // A parenthesized argument is an expression that PowerShell evaluates, so
+  // `Write-Output (Remove-Item x)` runs Remove-Item on the strength of its
+  // read-only first word.
+  for (const cmd of [
+    'Write-Output (Remove-Item victim.txt)',
+    'echo (New-Item -Name pwned -ItemType File)',
+    'Get-Item (Remove-Item victim.txt -Force)',
+    'Get-ChildItem (Get-Command Remove-Item)',
+  ]) {
+    assert.equal(isReadOnlyCommand(cmd), false, `expected risky: ${cmd}`)
+  }
+  // Quoted text is not parsed as code, so a regex keeps its parentheses.
+  assert.equal(isReadOnlyCommand('Select-String "a(b)c" package.json'), isWindows)
+})
+
+test('a subexpression cannot smuggle a command past the whitelist', async (t) => {
+  if (!isWindows) {
+    t.skip('PowerShell subexpression syntax only exists on Windows')
+    return
+  }
+  const ctx = await makeRoot()
+  let approved = 0
+  const gate = { ...ctx, approve: async () => { approved++; return false } }
+  await assert.rejects(
+    async () =>
+      await shellTool.execute(
+        { command: 'echo (New-Item -Name bypassed.txt -ItemType File -Force)' },
+        gate,
+      ),
+    /denied by user/,
+  )
+  assert.equal(approved, 1, 'the subexpression must reach the approver')
+  assert.equal(existsSync(path.join(ctx.root, 'bypassed.txt')), false)
+})
+
+test('PowerShell output stays readable instead of code-page mojibake', async (t) => {
+  if (!isWindows) {
+    t.skip('the code page is a Windows concern')
+    return
+  }
+  const ctx = await makeRoot()
+  // A missing path makes PowerShell emit a localized error; without the UTF-8
+  // preamble it arrives as replacement characters and the model cannot read it.
+  await assert.rejects(
+    async () => await shellTool.execute({ command: 'Get-ChildItem Z:\\definitely_missing' }, ctx),
+    (error: Error) => !error.message.includes('\uFFFD'),
+  )
+})
+
+test('PowerShell parameters that act outside the workspace or never end are risky', () => {
+  assert.equal(isReadOnlyCommand('Get-Help Get-Item -Online'), false)
+  assert.equal(isReadOnlyCommand('Get-Content -Wait log.txt'), false)
+  assert.equal(isReadOnlyCommand('Get-Help Get-Item'), isWindows)
+  assert.equal(isReadOnlyCommand('Get-Content -Tail 5 log.txt'), isWindows)
+})
+
+test('resolvePowerShellPath prefers an install, then PATH, then the bundled 5.1', () => {
+  const env = {
+    ProgramFiles: 'C:\\Program Files',
+    PATH: 'C:\\Windows;C:\\tools',
+    SystemRoot: 'C:\\Windows',
+  }
+  const installed = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+  const onPath = 'C:\\tools\\pwsh.exe'
+  const bundled = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+  assert.equal(resolvePowerShellPath(env, (candidate) => candidate !== bundled), installed)
+  assert.equal(resolvePowerShellPath(env, (candidate) => candidate === onPath), onPath)
+  assert.equal(resolvePowerShellPath(env, () => false), bundled)
+})
+
+test('the Windows null device is a discard, not a file redirection', () => {
+  const expected = isWindows
+  assert.equal(isReadOnlyCommand('Get-ChildItem 2>$null'), expected)
+  assert.equal(isReadOnlyCommand('Get-ChildItem > $null'), expected)
+  assert.equal(isReadOnlyCommand('ls 2>nul'), expected)
+  assert.equal(isReadOnlyCommand('ls >nul'), expected)
+  // `nul.txt` is an ordinary file name on every platform.
+  assert.equal(isReadOnlyCommand('ls > nul.txt'), false)
 })
 
 test('path-prefixed and env-prefixed programs are never whitelisted as read-only paths', () => {
@@ -240,6 +442,19 @@ test('a compound command smuggling rm needs approval even though ls is read-only
     /denied by user/,
   )
   assert.equal(approved, 1)
+})
+
+test('a bare & cannot smuggle a second command past the read-only whitelist', async () => {
+  const ctx = await makeRoot()
+  await writeFile(path.join(ctx.root, 'victim.txt'), 'keep', 'utf8')
+  let approved = 0
+  const gate = { ...ctx, approve: async () => { approved++; return false } }
+  await assert.rejects(
+    async () => await shellTool.execute({ command: 'type victim.txt & del victim.txt' }, gate),
+    /denied by user/,
+  )
+  assert.equal(approved, 1, 'the smuggled part must reach the approver')
+  assert.equal(await readFile(path.join(ctx.root, 'victim.txt'), 'utf8'), 'keep')
 })
 
 test('risky commands are denied by default when no approver is configured', async () => {

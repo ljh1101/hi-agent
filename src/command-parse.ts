@@ -6,8 +6,15 @@
 
 /**
  * Split a compound command into its subcommands. Shell separators: `&&`, `||`,
- * `;`, `|`, `|&` and newlines. Quoted strings are respected so a `;` inside
- * quotes does not split.
+ * `;`, `|`, `|&`, a bare `&` and newlines. Quoted strings are respected so a
+ * `;` inside quotes does not split.
+ *
+ * A bare `&` is a separator in *both* dialects this project speaks: it
+ * backgrounds the preceding command in POSIX shells, and it is the background
+ * operator in PowerShell 7 (`cmd.exe` read it as a plain sequential separator).
+ * Leaving it out let `type a.txt & del a.txt` pass the read-only test on its
+ * first word alone. The redirection forms `2>&1`, `>&2` and bash's `&>file`
+ * contain `&` too, so a `&` adjacent to `>` is never treated as a separator.
  */
 export function splitSubcommands(command: string): string[] {
   const parts: string[] = []
@@ -45,6 +52,12 @@ export function splitSubcommands(command: string): string[] {
       continue
     }
     if (ch === ';' || ch === '|' || ch === '\n') {
+      parts.push(current)
+      current = ''
+      continue
+    }
+    // A bare `&` separates commands; `&` touching a `>` is a redirection.
+    if (ch === '&' && command[i - 1] !== '>' && command[i + 1] !== '>') {
       parts.push(current)
       current = ''
       continue

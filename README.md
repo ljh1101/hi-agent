@@ -122,7 +122,7 @@ it robust:
 | `edit` | Replace a unique text span in place (str-replace, like Claude Code's Edit) |
 | `glob` | Find files by path pattern (`**/*.ts`, `{a,b}`, `?`) |
 | `grep` | Search file contents by regex, returning `file:line` matches with optional context |
-| `shell` | Execute a shell command (cross-platform), gated by a read-only command whitelist + approval |
+| `shell` | Execute a shell command (`bash` on POSIX, PowerShell on Windows), gated by a read-only command whitelist + approval |
 
 Adding one is a single object:
 
@@ -158,9 +158,12 @@ An agent that can touch the filesystem needs a boundary:
 - **Bounded cost.** `--max-steps` caps the number of model round-trips per turn,
   every model request has a 120s timeout, every tool a 30s timeout.
 - **Approval gate.** The `shell` tool runs a built-in read-only whitelist
-  (`ls`, `cat`, `grep`, `git status`, ...) without asking; anything else —
-  including compound commands with a risky part, file redirections, and command
-  substitution — goes through a three-layer permission system:
+  without asking — the POSIX set (`ls`, `cat`, `grep`, `git status`, ...), plus a
+  PowerShell set (`Get-ChildItem`, `Get-Content`, `Select-String`, ...) on
+  Windows, where the shell is `pwsh` 7 or the bundled Windows PowerShell 5.1.
+  Anything else — including compound commands with a risky part (`&&`, `;`, `|`,
+  a bare `&`), file redirections, command substitution and PowerShell script
+  blocks — goes through a three-layer permission system:
   1. **Session memory**: answer `a` at a prompt and that command prefix never
      asks again this session.
   2. **Persistent rules**: `hi-agent.json` supports

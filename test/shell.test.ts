@@ -3,7 +3,9 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { after, test } from 'node:test'
-import { isReadOnlyCommand, resolvePowerShellPath, shellTool } from '../src/tools/shell.ts'
+import { createShellTool, isReadOnlyCommand, resolvePowerShellPath, shellTool } from '../src/tools/shell.ts'
+import { splitSubcommands } from '../src/command-parse.ts'
+import { parseRules } from '../src/permissions.ts'
 import type { ToolContext } from '../src/types.ts'
 
 const scratchDirs: string[] = []
@@ -367,9 +369,19 @@ test('path-prefixed and env-prefixed programs are never whitelisted as read-only
   assert.equal(isReadOnlyCommand('/bin/rm -rf /'), false)
   assert.equal(isReadOnlyCommand('/bin/ls'), false)
   assert.equal(isReadOnlyCommand('./script.sh'), false)
-  // Env assignment prefix keeps the underlying program visible.
-  assert.equal(isReadOnlyCommand('FOO=bar ls'), true)
+  // An assignment prefix changes what gets executed, so it must not leave the
+  // underlying program visible: `PATH=./evil cat x` runs a model-supplied `cat`
+  // under the whitelisted name, and LD_PRELOAD/GIT_EXTERNAL_DIFF are code
+  // execution on their own.
+  assert.equal(isReadOnlyCommand('FOO=bar ls'), false)
+  assert.equal(isReadOnlyCommand('PATH=./evil cat x'), false)
+  assert.equal(isReadOnlyCommand('LD_PRELOAD=./evil.so cat x'), false)
+  assert.equal(isReadOnlyCommand('GIT_EXTERNAL_DIFF=./evil.sh git diff'), false)
   assert.equal(isReadOnlyCommand('FOO=bar rm x'), false)
+  // Locale, terminal and color variables cannot redirect execution or reads.
+  assert.equal(isReadOnlyCommand('LANG=C ls'), true)
+  assert.equal(isReadOnlyCommand('LC_ALL=en_US.UTF-8 NO_COLOR=1 ls'), true)
+  assert.equal(isReadOnlyCommand('TZ=UTC LC_CTYPE=C git status'), true)
 })
 
 test('git config and other write-capable git subcommands are risky', () => {
@@ -392,6 +404,93 @@ test('tail -f never terminates and is classified risky', () => {
   assert.equal(isReadOnlyCommand('tail -n 50 log.txt'), true)
 })
 
+test('find predicates that write a file or run a program are risky', () => {
+  for (const cmd of [
+    'find . -delete',
+    'find . -exec rm {} ;',
+    'find . -execdir rm {} +',
+    'find . -ok rm {} ;',
+    'find . -okdir rm {} ;',
+    // `-fls` was missed while `-fprint` was matched as a substring.
+    'find . -fls /tmp/out',
+    'find . -fprint /tmp/out',
+    'find . -fprint0 /tmp/out',
+    'find . -fprintf /tmp/out %p',
+  ]) {
+    assert.equal(isReadOnlyCommand(cmd), false, `expected risky: ${cmd}`)
+  }
+  // `-printf` writes to stdout, not to a file, and plain predicates only read.
+  assert.equal(isReadOnlyCommand('find . -printf %p'), true)
+  assert.equal(isReadOnlyCommand('find . -name "*.ts"'), true)
+  assert.equal(isReadOnlyCommand('find src -type f -newer package.json'), true)
+})
+
+// ---------------------------------------------------------------------------
+// Dialect-specific parsing. Both dialects are asserted explicitly, so the whole
+// matrix runs on every platform: a host-derived dialect can only ever be tested
+// for the host, which is how the PowerShell escaping bug stayed invisible.
+// ---------------------------------------------------------------------------
+
+test('PowerShell: a backslash does not escape a separator, the backtick does', () => {
+  // PowerShell's escape character is the backtick; `\` is an ordinary
+  // character. Treating `\;` as an escaped semicolon hid the smuggled command
+  // from the splitter while PowerShell ran it — measured end to end, this
+  // created a file outside the workspace root with no approval prompt.
+  assert.equal(isReadOnlyCommand('Get-Content \\; Remove-Item x', 'powershell'), false)
+  assert.equal(isReadOnlyCommand('Get-Content \\| Remove-Item x', 'powershell'), false)
+  assert.equal(isReadOnlyCommand('Get-Content \\& Remove-Item x', 'powershell'), false)
+  assert.equal(
+    isReadOnlyCommand('Get-Content \\; git push --force origin main', 'powershell'),
+    false,
+  )
+  // A backslash before a closing quote is a very common Windows path ending
+  // (`"C:\dir\"`) and closes the string in PowerShell.
+  assert.equal(isReadOnlyCommand('Get-Content "a\\" ; Remove-Item x', 'powershell'), false)
+  assert.equal(
+    isReadOnlyCommand('Get-Content "C:\\dir\\" ; New-Item -Path p -ItemType File', 'powershell'),
+    false,
+  )
+  // The same path ending with no smuggled command is still read-only.
+  assert.equal(isReadOnlyCommand('Get-Content "C:\\dir\\"', 'powershell'), true)
+  // A backtick is rejected outright whatever it precedes (it is bash's command
+  // substitution delimiter and PowerShell's escape), which is the strict side.
+  assert.equal(isReadOnlyCommand('Get-Content `; Remove-Item x', 'powershell'), false)
+})
+
+test('POSIX: a backslash does escape a separator', () => {
+  // bash really does treat `\;` as a literal argument, so there is nothing to
+  // split — the splitter must not "fix" this into a rejection either.
+  assert.equal(isReadOnlyCommand('cat a\\;b', 'posix'), true)
+  assert.equal(isReadOnlyCommand('grep x\\|y file', 'posix'), true)
+  // In bash an unescaped `;` inside an unterminated double quote is a syntax
+  // error, so keeping it as one part can never execute a second command.
+  assert.equal(isReadOnlyCommand('cat "a\\" ; rm x', 'posix'), true)
+  // A backtick is command substitution in bash and is always rejected.
+  assert.equal(isReadOnlyCommand('cat `x`', 'posix'), false)
+  assert.equal(isReadOnlyCommand('Get-Content x', 'posix'), false, 'a cmdlet is not a posix program')
+})
+
+test('the splitter follows the dialect of the shell that will run the command', () => {
+  // PowerShell: the backslash is literal, so every separator it precedes is a
+  // real separator and must split.
+  assert.equal(splitSubcommands('Get-Content \\; Remove-Item x', 'powershell').length, 2)
+  assert.equal(splitSubcommands('Get-Content \\| Remove-Item x', 'powershell').length, 2)
+  assert.equal(splitSubcommands('Get-Content "a\\" ; Remove-Item x', 'powershell').length, 2)
+  // PowerShell: the backtick escapes, so a separator it precedes does not split.
+  assert.equal(splitSubcommands('Get-Content `; Remove-Item x', 'powershell').length, 1)
+
+  // POSIX: exactly the other way round.
+  assert.equal(splitSubcommands('cat a\\;b', 'posix').length, 1)
+  assert.equal(splitSubcommands('cat "a\\" ; rm x', 'posix').length, 1)
+  assert.equal(splitSubcommands('cat ; rm x', 'posix').length, 2)
+  // The backtick is not an escape in bash, so it must not hide a separator.
+  assert.equal(splitSubcommands('cat `; rm x', 'posix').length, 2)
+
+  // Shared behaviour: single quotes honor no escapes in either dialect.
+  assert.equal(splitSubcommands("cat 'a\\;b' ; x", 'posix').length, 2)
+  assert.equal(splitSubcommands("Get-Content 'a\\;b' ; x", 'powershell').length, 2)
+})
+
 // ---------------------------------------------------------------------------
 // Approval gate behaviour.
 // ---------------------------------------------------------------------------
@@ -402,6 +501,60 @@ test('runs a read-only command without consulting approve', async () => {
   const gate = { ...ctx, approve: async () => { approved++; return true } }
   await shellTool.execute({ command: 'git status' }, gate)
   assert.equal(approved, 0, 'read-only command must skip the approval gate')
+})
+
+test('a deny rule beats the read-only whitelist', async () => {
+  // The whitelist is a convenience heuristic; a user who writes a deny rule
+  // must be able to close a hole in it. Before this, the whitelist decided
+  // first and the deny list was never consulted for a whitelisted command.
+  const ctx = await makeRoot()
+  const tool = createShellTool({ rules: parseRules({ deny: ['echo *'] }) })
+  let asked = 0
+  await assert.rejects(
+    async () =>
+      await tool.execute(
+        { command: 'echo hello' },
+        { ...ctx, approve: async () => { asked++; return true } },
+      ),
+    /blocked by a deny rule/,
+  )
+  assert.equal(asked, 0, 'a denied command must not reach the approver')
+})
+
+test('the host dialect refuses a command smuggled behind a backslash', async () => {
+  const ctx = await makeRoot()
+
+  if (isWindows) {
+    // Regression: PowerShell closes the string at `\"` and treats `\;` as a
+    // separator, so both payloads used to be classified read-only and ran with
+    // no approval prompt at all.
+    for (const command of [
+      'Get-Content \\; Remove-Item -Path nothing',
+      'Get-Content "a\\" ; Remove-Item -Path nothing',
+    ]) {
+      let asked = 0
+      await assert.rejects(
+        async () =>
+          await shellTool.execute(
+            { command },
+            { ...ctx, approve: async () => { asked++; return false } },
+          ),
+        /denied by user/,
+        `the smuggled command must reach the approver: ${command}`,
+      )
+      assert.equal(asked, 1, `the approver must be consulted once: ${command}`)
+    }
+  } else {
+    // bash honours `\;`, so the whole line is genuinely one read-only command
+    // and must keep running without a prompt.
+    let asked = 0
+    const result = await shellTool.execute(
+      { command: 'echo a\\;b' },
+      { ...ctx, approve: async () => { asked++; return true } },
+    )
+    assert.match(result, /a;b/)
+    assert.equal(asked, 0)
+  }
 })
 
 test('asks approve for a non-read-only command and denies it', async () => {

@@ -12,7 +12,12 @@
  * smuggling a risky part past an allow rule.
  */
 
-import { commandLeaders, splitSubcommands } from './command-parse.ts'
+import {
+  commandLeaders,
+  defaultDialect,
+  splitSubcommands,
+  type ShellDialect,
+} from './command-parse.ts'
 
 export interface PermissionRules {
   /** Prefixes that run without approval. */
@@ -54,9 +59,17 @@ export type PermissionDecision = 'allow' | 'deny' | 'ask'
  * - any subcommand matching a deny rule  → deny the whole line
  * - every subcommand matching an allow rule → allow
  * - otherwise → ask
+ *
+ * `dialect` must be the dialect of the shell the command will actually run in:
+ * the split has to match that shell's grammar, or a separator it honors but the
+ * parser missed stays hidden inside the first subcommand and inherits its allow.
  */
-export function evaluate(command: string, rules: PermissionRules): PermissionDecision {
-  const parts = splitSubcommands(command)
+export function evaluate(
+  command: string,
+  rules: PermissionRules,
+  dialect: ShellDialect = defaultDialect(),
+): PermissionDecision {
+  const parts = splitSubcommands(command, dialect)
   if (parts.length === 0) return 'ask'
 
   for (const part of parts) {

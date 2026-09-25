@@ -66,6 +66,10 @@ See `hi-agent --list-providers` for the preset endpoints and
 `hi-agent --setup` to re-run the guided setup. Inside an interactive session,
 `/model` lists the provider's live models and switches on the spot (your
 conversation is kept), and `/model <id>` jumps straight to a model by name.
+Sessions persist to JSONL files: `--continue`/`--resume` restore one at
+startup and `/session` lists or switches; `/reset` clears history,
+`/compact` summarizes old history, and `/undo` reverts the last turn's file
+changes. Ctrl+C cancels the turn in flight; twice (or at the prompt) quits.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
@@ -75,7 +79,8 @@ conversation is kept), and `/model <id>` jumps straight to a model by name.
 | `HI_AGENT_CONFIG_DIR` | Override the global config directory | platform default |
 
 CLI flags: `--model`, `--base-url`, `--api-key`, `--max-steps`, `--system`,
-`--root`, `--verbose`. See `npm run dev -- --help`.
+`--root`, `--setup`, `--list-providers`, `--continue`, `--resume <id>`,
+`--yes`, `--stream`/`--no-stream`, `--verbose`. See `npm run dev -- --help`.
 
 ## How the core works
 
@@ -85,7 +90,8 @@ The whole agent is this loop (`src/agent.ts`):
 history.push({ role: 'user', content: input })
 
 for (let step = 1; step <= maxSteps; step++) {
-  const reply = await llm.chat(history, tools)            // 1. ask the model
+  const view = projectHistory(history)                    // 0. the model sees a projection
+  const reply = await llm.chat(view, tools)               // 1. ask the model
   history.push({ role: 'assistant', content: reply.content, tool_calls: reply.toolCalls })
 
   if (reply.toolCalls.length === 0) return reply.content   // 2. no tools? that is the answer
@@ -96,7 +102,7 @@ for (let step = 1; step <= maxSteps; step++) {
 }
 ```
 
-Everything else is scaffolding around those four steps. Three design rules keep
+Everything else is scaffolding around those four steps. Four design rules keep
 it robust:
 
 1. **Tool failures are data, not crashes.** Bad JSON arguments, unknown tool
@@ -109,6 +115,10 @@ it robust:
    scripted fake. Swapping providers means changing one file, not the loop.
 3. **Tools are just objects.** A tool is a name, a description, a JSON Schema
    and an `execute` function. There is no plugin system to learn.
+4. **History is truth, requests are projections.** `agent.history` keeps full
+   fidelity (persistence and rewind build on it); the model only ever sees
+   `projectHistory`'s output. Compaction is the one operation that rewrites
+   history — and on failure it leaves the history byte-identical.
 
 ## The tools
 
@@ -245,7 +255,7 @@ summarization failure the history is left untouched.
 
 ```
 src/
-  types.ts             the whole contract: ChatMessage, LLM, Tool, events (~130 lines)
+  types.ts             the whole contract: ChatMessage, LLM, Tool, events (~230 lines)
   agent.ts             the loop, history management, tool execution, error recovery
   llm.ts               OpenAI-compatible client + retry/backoff + SSE streaming
   context.ts           request projection + token accounting + LLM compaction
@@ -269,7 +279,20 @@ src/
   cli.ts               one-shot and interactive entry point
 examples/demo.ts       the loop running against a scripted model, offline
 test/                  suites: loop, parser, tools, search, edit, line endings, shell, permissions, config, context, streaming, end-to-end
+doc/                   per-module design docs in zh + en (index: doc/README.md)
 ```
+
+## Documentation
+
+Module-by-module design docs live in `doc/`, in **both Chinese and English**
+(mirrored, updated together): [中文文档](doc/zh/README.md) ·
+[English docs](doc/en/README.md). They cover the agent loop, the LLM client,
+context management, the safety model and permission chain, every tool,
+session persistence and undo, configuration and providers, the CLI, and the
+test system — including the *why* behind each design decision. Code and docs
+move together: a change that alters behavior, interfaces, defaults, safety
+boundaries, or file formats updates the matching doc section — in both
+languages — in the same change.
 
 ## Tests
 
@@ -311,10 +334,12 @@ read tools strip it. So the tools own line endings on the model's behalf.
 Everything below is an addition on top of the same loop, not a rewrite:
 
 - **Parallel tool execution** (the loop runs tool calls sequentially today).
-- **Context management**: summarization or truncation once history outgrows the
-  context window.
-- **Persistence**: saving/resuming sessions, and long-term memory.
+- **Long-term memory** beyond session files.
 - **Multi-agent**: sub-agents, planners, or an MCP client.
+
+Formerly on this list and now shipped: context compaction (auto-triggered
+with a discovered `contextWindow`, or `/compact`), session persistence
+(`--continue`/`--resume`, `/session`, JSONL files), and undo (`/undo`).
 
 Pick the one your use case needs first; the interfaces in `src/types.ts` are
 small enough that none of them require touching the loop.

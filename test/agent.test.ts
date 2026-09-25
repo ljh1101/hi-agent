@@ -420,6 +420,101 @@ test('compact replaces old history with an LLM summary, keeping recent turns', a
   assert.equal(summaryRequest.tools.length, 0)
 })
 
+test('repeated compaction replaces the summary instead of stacking it', async () => {
+  // Before this, every compaction kept all previous summaries as system
+  // messages: measured, three compactions left four system messages, so the
+  // model saw several stale "Next Steps" at once and the system prefix grew
+  // without bound (it can never be compacted away, being a system message).
+  const oldWork = 'x'.repeat(4000)
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('echo', { text: oldWork })),
+    reply('first done'),
+    reply('SUMMARY-ROUND-1'),
+    reply(null, toolCall('echo', { text: oldWork })),
+    reply('second done'),
+    reply('SUMMARY-ROUND-2'),
+    reply(null, toolCall('echo', { text: oldWork })),
+    reply('third done'),
+    reply('SUMMARY-ROUND-3'),
+  ])
+  const agent = new Agent({
+    llm,
+    tools: [echoTool],
+    maxSteps: 4,
+    compaction: { contextWindow: 100_000, keepRecentTokens: 100 },
+  })
+
+  for (let round = 1; round <= 3; round++) {
+    await agent.run(`turn ${round}`)
+    assert.equal(await agent.compact(), true)
+    const summaries = agent.history.filter((m) => m.summary === true)
+    assert.equal(summaries.length, 1, `round ${round}: exactly one summary`)
+    assert.match(summaries[0]!.content ?? '', new RegExp(`SUMMARY-ROUND-${round}`))
+    // The real system prompt survives every round and stays first.
+    assert.equal(agent.history[0]!.role, 'system')
+    assert.equal(agent.history[0]!.summary, undefined)
+  }
+
+  // Each summarization call carries the previous summary (it is offered as a
+  // system message), so replacing the old one loses nothing it captured.
+  const summaryRequests = llm.requests.filter((request) => request.tools.length === 0)
+  assert.equal(summaryRequests.length, 3, 'one summarization call per compaction')
+  const transcriptOf = (index: number): string =>
+    summaryRequests[index]!.messages.map((m) => m.content ?? '').join('\n')
+  assert.match(transcriptOf(1), /SUMMARY-ROUND-1/, 'round 2 saw round 1')
+  assert.match(transcriptOf(2), /SUMMARY-ROUND-2/, 'round 3 saw round 2')
+})
+
+test('reset notifies the persistence layer', async () => {
+  // A session cleared in memory but left on disk comes back on the next
+  // resume, which reads as the clear silently not working.
+  const llm = new ScriptedLLM([reply('done')])
+  const snapshots: Array<readonly ChatMessage[]> = []
+  const agent = new Agent({ llm, tools: [echoTool] })
+  agent.setPersistenceHooks(
+    () => {},
+    (history) => snapshots.push([...history]),
+  )
+  await agent.run('go')
+  agent.reset()
+
+  assert.equal(snapshots.length, 1, 'reset must fire the replace hook')
+  assert.ok(snapshots[0]!.every((m) => m.role === 'system'), 'the snapshot holds only the prompt')
+  assert.equal(agent.history.length, 1)
+})
+
+test('when compaction fails, the request is projected down instead of sent as is', async () => {
+  // A failed summarization leaves the history over the window. Sending it
+  // anyway draws a context-length rejection and ends the turn, so the loop
+  // drops the age protection for that one request: less detail, but an answer.
+  const huge = 'z'.repeat(40_000)
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('echo', { text: huge })),
+    reply(''), // the summarization call returns nothing -> compaction fails
+    reply('answered anyway'),
+  ])
+  const agent = new Agent({
+    llm,
+    tools: [echoTool],
+    maxSteps: 3,
+    compaction: { contextWindow: 2_000, keepRecentTokens: 200 },
+  })
+
+  const result = await agent.run('go')
+  assert.equal(result.stopReason, 'final')
+  assert.equal(result.content, 'answered anyway')
+
+  const sent = llm.requests.at(-1)!.messages
+  const toolMessage = sent.find((m) => m.role === 'tool')
+  assert.ok(toolMessage, 'the tool result is still in the request')
+  assert.ok(
+    (toolMessage.content ?? '').length < 1_000,
+    `the result must be projected down, got ${toolMessage.content?.length} chars`,
+  )
+  // The stored history keeps full fidelity; only the request was trimmed.
+  assert.equal(agent.history.find((m) => m.role === 'tool')?.content?.length, huge.length + 6)
+})
+
 test('compaction failure leaves the history untouched', async () => {
   const llm = new ScriptedLLM([
     reply(null, toolCall('echo', { text: 'w'.repeat(4000) })),

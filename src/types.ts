@@ -34,6 +34,19 @@ export interface ChatMessage {
   tool_call_id?: string
   /** Present on `tool` messages; the tool name. */
   name?: string
+  /**
+   * Agent-local marker for a system message that is a generated compaction
+   * summary rather than a real system prompt.
+   *
+   * Compaction must be able to tell them apart: the user's system prompt(s)
+   * survive every compaction, while a summary is *replaced* by the next one.
+   * Without the marker the summaries stack up, each compaction adding another
+   * stale snapshot to the front of the history. The marker is persisted with the
+   * message, so a resumed session compacts correctly too, and the wire
+   * projection (`toWireMessage`) never sends it — it is not part of the
+   * provider's schema.
+   */
+  summary?: true
 }
 
 /** Minimal JSON Schema subset needed to describe tool arguments. */

@@ -18,6 +18,7 @@ import {
   appendCompaction,
   appendMessage,
   createSession,
+  flushSessions,
   listSessions,
   loadSession,
   newSessionId,
@@ -348,9 +349,16 @@ async function repl(session: SessionConfig & { yes?: boolean; store?: SessionSto
     if (!store.id || !store.on) return
     await appendCompaction(configDir, store.id, history)
   }
+  // The hooks cannot be awaited by the loop, but a rejected write must not
+  // become an unhandled rejection (which takes the process down in newer Node):
+  // report it and keep the session usable.
+  const reportWriteError = (error: unknown): void => {
+    const reason = error instanceof Error ? error.message : String(error)
+    console.error(color(RED, `session write failed: ${reason}`))
+  }
   agent.setPersistenceHooks(
-    (message) => void record(message),
-    (history) => void recordReplace(history),
+    (message) => void record(message).catch(reportWriteError),
+    (history) => void recordReplace(history).catch(reportWriteError),
   )
 
   console.log('hi-agent interactive mode. Commands: /reset, /model, /session, /compact, exit. Ctrl+C quits.')
@@ -397,6 +405,9 @@ async function repl(session: SessionConfig & { yes?: boolean; store?: SessionSto
     }
   } finally {
     rl.close()
+    // The appends are fire-and-forget by design; quitting while one is in
+    // flight would drop the turn the user just watched. Wait for them.
+    await flushSessions()
   }
   if (verbose) console.log(color(DIM, 'bye'))
 }

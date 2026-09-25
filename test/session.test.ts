@@ -7,6 +7,7 @@ import {
   appendMessage,
   createSession,
   deleteSession,
+  flushSessions,
   listSessions,
   loadSession,
   newSessionId,
@@ -98,6 +99,36 @@ test('appendCompaction snapshots; old lines stay on disk and replay resumes afte
   const raw = await readFile(path.join(sessionsDir(dir), `${id}.jsonl`), 'utf8')
   assert.match(raw, /old 1/)
   assert.match(raw, /"kind":"compaction"/)
+})
+
+test('unawaited appends still land in order, and flushSessions waits for them', async () => {
+  // Every append is its own open/write/close, so two overlapping calls can land
+  // in either order. Order is not cosmetic: an assistant message carrying
+  // `tool_calls` written after its tool result makes the provider reject the
+  // replayed conversation. A large line next to a small one is the case most
+  // likely to invert, so the test mixes sizes and never awaits.
+  const dir = await makeConfigDir()
+  const id = newSessionId()
+  await createSession(dir, id, 'test-model')
+
+  const huge = assistant('h'.repeat(2_000_000))
+  const small = user('after the big one')
+  const writes = [
+    appendMessage(dir, id, user('first')),
+    appendMessage(dir, id, huge),
+    appendMessage(dir, id, small),
+  ]
+
+  await flushSessions()
+  await Promise.all(writes)
+
+  const loaded = await loadSession(dir, id)
+  assert.ok(loaded)
+  assert.deepEqual(
+    loaded.history.map((m) => m.content),
+    ['first', huge.content, small.content],
+    'lines must be in the order they were queued',
+  )
 })
 
 test('a second compaction supersedes the first', async () => {

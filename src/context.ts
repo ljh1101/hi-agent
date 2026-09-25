@@ -29,6 +29,14 @@ export interface ContextOptions {
    * model most likely still needs those. Default 3.
    */
   protectedTurns?: number
+  /**
+   * Absolute ceiling for a single tool result, applied whatever its age —
+   * the age protection above is about *relevance*, this one is about not
+   * letting one observation own the window. A 50KB shell dump in the turn
+   * being answered is protected from the age rule and can push the request
+   * over the model's limit on its own. `0` disables the ceiling. Default 8000.
+   */
+  maxToolResultChars?: number
 }
 
 const DEFAULTS = {
@@ -36,6 +44,7 @@ const DEFAULTS = {
   pruneHeadChars: 300,
   pruneTailChars: 300,
   protectedTurns: 3,
+  maxToolResultChars: 8000,
 }
 
 /** Marker inserted where content was removed, mirroring dsh's PRUNE_MARKER. */
@@ -46,6 +55,7 @@ export interface ResolvedContextOptions {
   pruneHeadChars: number
   pruneTailChars: number
   protectedTurns: number
+  maxToolResultChars: number
 }
 
 export function resolveContextOptions(options: ContextOptions = {}): ResolvedContextOptions {
@@ -54,6 +64,7 @@ export function resolveContextOptions(options: ContextOptions = {}): ResolvedCon
     pruneHeadChars: options.pruneHeadChars ?? DEFAULTS.pruneHeadChars,
     pruneTailChars: options.pruneTailChars ?? DEFAULTS.pruneTailChars,
     protectedTurns: options.protectedTurns ?? DEFAULTS.protectedTurns,
+    maxToolResultChars: options.maxToolResultChars ?? DEFAULTS.maxToolResultChars,
   }
 }
 
@@ -62,12 +73,20 @@ export function resolveContextOptions(options: ContextOptions = {}): ResolvedCon
  *
  * Rules:
  * - system / user / assistant messages are passed through untouched
- * - a tool message is pruned only when BOTH apply:
- *   1. it is longer than the threshold, and
+ * - a tool message is pruned to `pruneHeadChars`+`pruneTailChars` when BOTH apply:
+ *   1. it is longer than `pruneThresholdChars`, and
  *   2. it belongs to a user turn older than the `protectedTurns` most recent
  *      turns (turns are delimited by user messages)
+ * - a tool message longer than `maxToolResultChars` is trimmed to half that at
+ *   each end *whatever its age*: age says whether the model still needs a
+ *   result, the ceiling says no single observation may own the window
  * - pruning keeps the head and tail and marks the removed middle, so the model
  *   knows content existed and roughly how much
+ * - the age rule is tested FIRST: it is the more aggressive budget, and letting
+ *   the ceiling shadow it would make old results *bigger* in the request than
+ *   they used to be (measured: an old 40k result went from 600 characters to
+ *   8000). Setting `protectedTurns` to 0 therefore prunes every tool result,
+ *   which is what the emergency projection relies on.
  */
 export function projectHistory(
   history: readonly ChatMessage[],
@@ -76,11 +95,21 @@ export function projectHistory(
   const cutoff = protectedCutoff(history, options.protectedTurns)
   return history.map((message, index) => {
     if (message.role !== 'tool') return message
-    if (index >= cutoff) return message
     // Tool messages always carry a string content (only assistant may be null).
     const content = message.content ?? ''
-    if (content.length <= options.pruneThresholdChars) return message
-    return { ...message, content: pruneMiddle(content, options) }
+
+    if (index < cutoff && content.length > options.pruneThresholdChars) {
+      return { ...message, content: pruneMiddle(content, options) }
+    }
+
+    if (options.maxToolResultChars > 0 && content.length > options.maxToolResultChars) {
+      // Split the budget evenly: the head carries the shape of the output, the
+      // tail carries the error or the summary line a command usually ends with.
+      const half = Math.floor(options.maxToolResultChars / 2)
+      return { ...message, content: truncateMiddle(content, half, half) }
+    }
+
+    return message
   })
 }
 
@@ -105,10 +134,19 @@ function protectedCutoff(history: readonly ChatMessage[], protectedTurns: number
 
 /** Keep head and tail, replace the middle with a size marker. */
 export function pruneMiddle(text: string, options: ResolvedContextOptions): string {
-  const keep = options.pruneHeadChars + options.pruneTailChars
+  return truncateMiddle(text, options.pruneHeadChars, options.pruneTailChars)
+}
+
+/**
+ * Keep `headChars` from the front and `tailChars` from the back, replacing the
+ * middle with a marker that reports how much was removed. Returns the text
+ * unchanged when it already fits.
+ */
+export function truncateMiddle(text: string, headChars: number, tailChars: number): string {
+  const keep = headChars + tailChars
   if (text.length <= keep) return text
-  const head = text.slice(0, options.pruneHeadChars)
-  const tail = text.slice(text.length - options.pruneTailChars)
+  const head = text.slice(0, headChars)
+  const tail = text.slice(text.length - tailChars)
   return `${head}${PRUNE_MARKER(text.length - keep)}${tail}`
 }
 
@@ -120,6 +158,31 @@ export interface TokenUsage {
   promptTokens?: number
   completionTokens?: number
   totalTokens?: number
+}
+
+/**
+ * The projection actually sent for one request: the normal one, or the
+ * emergency one when even that is over the budget.
+ *
+ * A successful compaction always lands well under the budget — the cut keeps
+ * roughly `retainRatio` of the window and the projection only shrinks it
+ * further — so this fires when compaction did *not* do its job: the
+ * summarization call failed, or is unavailable, while the history is already
+ * over the limit. Sending the request anyway draws a context-length rejection
+ * from the provider and ends the turn; dropping the age protection (recent tool
+ * results are otherwise kept whole) trades detail for an answer. Nothing here
+ * touches the history.
+ */
+export function projectRequestView(
+  history: readonly ChatMessage[],
+  options: ResolvedContextOptions,
+  compaction: Pick<ResolvedCompactionOptions, 'contextWindow' | 'thresholdTokens'>,
+  usages: ReadonlyMap<number, TokenUsage>,
+): ChatMessage[] {
+  const view = projectHistory(history, options)
+  if (compaction.contextWindow <= 0) return view
+  if (contextUsage(view, usages).tokens <= compaction.thresholdTokens) return view
+  return projectHistory(history, { ...options, protectedTurns: 0 })
 }
 
 /**

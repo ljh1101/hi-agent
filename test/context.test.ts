@@ -6,6 +6,7 @@ import {
   findCutPoint,
   pruneMiddle,
   projectHistory,
+  projectRequestView,
   resolveCompactionOptions,
   resolveContextOptions,
   serializeForSummary,
@@ -154,6 +155,76 @@ test('protectedTurns: 0 disables protection entirely', () => {
   )
   const view = projectHistory(history, noProtection)
   assert.match(view[2]!.content ?? '', /characters pruned/)
+})
+
+test('a single tool result is capped whatever its age', () => {
+  // The age rule protects the newest turns because the model still needs them;
+  // this ceiling exists so that one observation cannot own the window on its
+  // own — a 50KB shell dump in the turn being answered is otherwise protected
+  // from pruning and can push the request over the model's limit by itself.
+  const capped = resolveContextOptions({ maxToolResultChars: 1000 })
+  const history = historyWith(
+    user('turn 1'),
+    assistant('running', [{ id: 'c1', name: 'shell', arguments: '{}' }]),
+    tool('c1', 'x'.repeat(20_000)),
+  )
+  const view = projectHistory(history, capped)
+  const body = view[2]!.content ?? ''
+  assert.ok(body.length < 1200, `expected the cap to apply, got ${body.length}`)
+  assert.match(body, /characters pruned/)
+  // Half the budget at each end: the head shows the shape of the output, the
+  // tail keeps the error or summary a command usually ends with.
+  assert.ok(body.startsWith('x'.repeat(500)))
+  assert.ok(body.endsWith('x'.repeat(500)))
+  // The history itself is never touched.
+  assert.equal(history[2]!.content?.length, 20_000)
+
+  // Under the cap and recent: left alone.
+  const smallHistory = historyWith(user('turn 1'), tool('c1', 'y'.repeat(900)))
+  assert.equal(projectHistory(smallHistory, capped)[1]!.content, 'y'.repeat(900))
+})
+
+test('the age rule wins over the ceiling for old results', () => {
+  // Order matters: testing the ceiling first made an old 40k result come back
+  // as 8000 characters instead of the 600 the age rule gives it — the request
+  // grew, which is the opposite of the point.
+  const options = resolveContextOptions({ maxToolResultChars: 8000 })
+  const history = historyWith(
+    user('turn 1'),
+    tool('c1', 'x'.repeat(40_000)),
+    user('turn 2'),
+    user('turn 3'),
+    user('turn 4'),
+  )
+  const old = projectHistory(history, options)[1]!.content ?? ''
+  assert.ok(
+    old.length < options.pruneThresholdChars,
+    `the aggressive prune must win, got ${old.length}`,
+  )
+})
+
+test('projectRequestView drops the age protection once the budget is blown', () => {
+  const options = resolveContextOptions()
+  const recent = historyWith(
+    user('turn 1'),
+    assistant('running', [{ id: 'c1', name: 'shell', arguments: '{}' }]),
+    tool('c1', 'x'.repeat(20_000)),
+  )
+  const noUsages = new Map<number, { totalTokens?: number }>()
+
+  // Compaction disabled: the plain projection, whatever the size.
+  const off = projectRequestView(recent, options, { contextWindow: 0, thresholdTokens: 1 }, noUsages)
+  assert.ok((off[2]!.content ?? '').length > 1000, 'no emergency pass without a window')
+
+  // Under the budget: the recent result keeps its protected size.
+  const roomy = projectRequestView(recent, options, { contextWindow: 100_000, thresholdTokens: 80_000 }, noUsages)
+  assert.ok((roomy[2]!.content ?? '').length > 1000, 'recent results stay whole under budget')
+
+  // Over the budget: pruning now applies to the newest turn too.
+  const tight = projectRequestView(recent, options, { contextWindow: 2_000, thresholdTokens: 1_600 }, noUsages)
+  const body = tight[2]!.content ?? ''
+  assert.ok(body.length < 1000, `expected the emergency projection, got ${body.length}`)
+  assert.match(body, /characters pruned/)
 })
 
 test('custom budgets are honoured', () => {

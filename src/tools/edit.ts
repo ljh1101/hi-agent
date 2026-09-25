@@ -5,7 +5,7 @@ import {
   detectLineEnding,
   displayPath,
   normalizeLineEndings,
-  resolveInsideRoot,
+  resolveToolPath,
 } from './filesystem.ts'
 
 /**
@@ -55,7 +55,7 @@ export const editTool: Tool<{ path: string; old_string: string; new_string: stri
       throw new Error('"old_string" and "new_string" are identical; no change to make')
     }
 
-    const absolute = resolveInsideRoot(target, ctx)
+    const absolute = await resolveToolPath(target, ctx)
     let raw: string
     try {
       raw = await readFile(absolute, 'utf8')

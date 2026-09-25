@@ -1,7 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import type { Tool, ToolContext } from '../types.ts'
-import { displayPath, resolveInsideRoot, splitLines } from './filesystem.ts'
+import { displayPath, resolveToolPath, splitLines } from './filesystem.ts'
 
 const MAX_MATCHES = 200
 const MAX_GREP_LINE = 500
@@ -140,7 +140,7 @@ export const globTool: Tool<{ pattern: string; path?: string }> = {
     if (typeof pattern !== 'string' || pattern.trim() === '') {
       throw new Error('"pattern" must be a non-empty string')
     }
-    const absolute = resolveInsideRoot(target, ctx)
+    const absolute = await resolveToolPath(target, ctx)
     const regex = globToRegex(pattern)
     const skipDirs = await collectSkipDirs(ctx.root)
 
@@ -197,7 +197,7 @@ export const grepTool: Tool<{
     if (!Number.isInteger(context) || context < 0) {
       throw new Error('"context" must be a non-negative integer')
     }
-    const absolute = resolveInsideRoot(target, ctx)
+    const absolute = await resolveToolPath(target, ctx)
     let regex: RegExp
     try {
       regex = new RegExp(pattern)

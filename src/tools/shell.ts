@@ -4,7 +4,12 @@ import path, { join } from 'node:path'
 import type { Tool } from '../types.ts'
 import { EMPTY_RULES, evaluate, type PermissionRules } from '../permissions.ts'
 import { resolveInsideRoot } from './filesystem.ts'
-import { commandLeaders, splitSubcommands } from '../command-parse.ts'
+import {
+  commandLeaders,
+  defaultDialect,
+  splitSubcommands,
+  type ShellDialect,
+} from '../command-parse.ts'
 
 const DEFAULT_TIMEOUT_MS = 120_000
 /** Hard cap for the per-call `timeout` argument, in seconds. */
@@ -166,27 +171,30 @@ const GIT_REMOTE_WRITE_SUBCOMMANDS = /\bremote\s+(add|remove|rm|rename|set-url|s
  * Command substitutions (`$(...)`, backticks) and file redirections make the
  * command non-read-only outright. Descriptor redirections (`2>&1`, `>&2`) and
  * redirects into the null device are harmless and allowed. Write-capable flags
- * on otherwise read-only commands (`find -delete`, `sort -o`, `git branch -D`)
+ * on otherwise read-only commands (`find -fls`, `sort -o`, `git branch -D`)
  * also disqualify, as do PowerShell script blocks: `{...}` and `@...` are code,
  * and cmdlets such as `Sort-Object` and `Select-Object` evaluate the script
  * blocks they are handed.
  */
-function isReadOnlySubcommand(command: string): boolean {
-  // Command substitution can execute anything; never whitelist it.
+function isReadOnlySubcommand(command: string, dialect: ShellDialect): boolean {
+  const isPowerShell = dialect === 'powershell'
+  // Command substitution can execute anything; never whitelist it. The backtick
+  // is PowerShell's escape and bash's substitution delimiter, so rejecting it
+  // outright is correct in both dialects.
   if (command.includes('$(') || command.includes('`')) return false
   // In PowerShell a script block, a splat and a parenthesized subexpression are
   // code, not data: `Write-Output (Remove-Item x)` runs Remove-Item, and
   // `Sort-Object { ... }` evaluates its script block. Quoted text is exempt, so
   // a regex like `Select-String "a(b)c"` stays whitelisted.
-  if (IS_WINDOWS && /[(@{]/.test(withoutQuotedText(command))) return false
+  if (isPowerShell && /[(@{]/.test(withoutQuotedText(command))) return false
   // File redirections read or write files; never whitelist them.
-  if (hasFileRedirection(command)) return false
+  if (hasFileRedirection(command, dialect)) return false
 
   const leaders = commandLeaders(command)
   // Path-prefixed programs (/bin/rm, C:\tools\x.exe, ./script) are never
   // whitelisted. PowerShell command lookup is case-insensitive.
-  const program = IS_WINDOWS ? leaders.program.toLowerCase() : leaders.program
-  const subcommand = IS_WINDOWS ? leaders.subcommand?.toLowerCase() : leaders.subcommand
+  const program = isPowerShell ? leaders.program.toLowerCase() : leaders.program
+  const subcommand = isPowerShell ? leaders.subcommand?.toLowerCase() : leaders.subcommand
   if (program === '' || program.includes('/') || program.includes('\\')) return false
 
   if (program === 'git') {
@@ -208,8 +216,15 @@ function isReadOnlySubcommand(command: string): boolean {
   }
 
   if (program === 'find') {
-    // `find -delete` and `find -exec` are write/exec capabilities.
-    if (/\s-delete\b|\s-exec\b|\s-execdir\b|\s-ok\b|\s-okdir\b|\s-fprint/.test(command)) return false
+    // Every predicate that writes a file or runs a program, spelled out in
+    // full rather than pattern-matched. Matching `-fprint` as a substring
+    // happened to cover `-fprint`/`-fprint0`/`-fprintf` but silently missed
+    // `-fls`, which GNU and BSD find both provide: `find . -fls OUT` wrote an
+    // arbitrary file while classified read-only. `-printf` is deliberately
+    // absent — it writes to stdout, not to a file.
+    if (/(^|\s)-(delete|exec|execdir|ok|okdir|fls|fprint|fprint0|fprintf)(\s|$)/.test(command)) {
+      return false
+    }
     return true
   }
 
@@ -219,7 +234,7 @@ function isReadOnlySubcommand(command: string): boolean {
     return true
   }
 
-  if (IS_WINDOWS) {
+  if (isPowerShell) {
     // Parameters that act outside the workspace or never terminate, on cmdlets
     // that are otherwise read-only. PowerShell parameter names are
     // case-insensitive, so these matches are too.
@@ -246,15 +261,15 @@ function withoutQuotedText(command: string): string {
  * Windows `nul`) are safe; anything else (`> file`, `>> file`, `< file`,
  * `2> file`) targets a file and needs approval.
  */
-function hasFileRedirection(command: string): boolean {
+function hasFileRedirection(command: string, dialect: ShellDialect): boolean {
   // Strip quoted strings first so `echo "a > b"` does not count.
   let harmless = withoutQuotedText(command)
     .replace(/\d*>&\d+/g, '')
     .replace(/>>?\s*\/dev\/null/g, '')
-  // `$null` and `nul` are null devices only on Windows; elsewhere they are
+  // `$null` and `nul` are null devices only in PowerShell; elsewhere they are
   // ordinary names (`$null` is not even a name), and `nul.txt` is an ordinary
   // file name everywhere.
-  if (IS_WINDOWS) {
+  if (dialect === 'powershell') {
     harmless = harmless
       .replace(/>>?\s*\$null(?![A-Za-z0-9_])/gi, '')
       .replace(/>>?\s*nul(?![A-Za-z0-9_.])/gi, '')
@@ -265,11 +280,18 @@ function hasFileRedirection(command: string): boolean {
 /**
  * Whether a full command line is safe to run without approval: every
  * subcommand of the compound must be read-only.
+ *
+ * `dialect` must be the dialect of the shell that will run the command — the
+ * split and the grammar checks below are meaningless if they use the other
+ * shell's rules. Defaults to the host's shell.
  */
-export function isReadOnlyCommand(command: string): boolean {
-  const parts = splitSubcommands(command)
+export function isReadOnlyCommand(
+  command: string,
+  dialect: ShellDialect = defaultDialect(),
+): boolean {
+  const parts = splitSubcommands(command, dialect)
   if (parts.length === 0) return false
-  return parts.every((part) => isReadOnlySubcommand(part))
+  return parts.every((part) => isReadOnlySubcommand(part, dialect))
 }
 
 /** A shell invocation: the executable, its fixed arguments, and a command prefix. */
@@ -278,6 +300,12 @@ interface ShellConfig {
   args: string[]
   /** Text prepended to every command (only used for Windows PowerShell 5.1). */
   prefix: string
+  /**
+   * The grammar commands must be parsed with. Classification reads this, never
+   * the host platform directly, so the parser and the shell can never disagree
+   * about which dialect is running.
+   */
+  dialect: ShellDialect
 }
 
 /**
@@ -343,12 +371,13 @@ function resolveShell(): ShellConfig {
       shell: resolvePowerShellPath(),
       args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command'],
       prefix: POWERSHELL_ENCODING_PREAMBLE,
+      dialect: 'powershell',
     }
     return cachedShell
   }
   cachedShell = existsSync('/bin/bash')
-    ? { shell: '/bin/bash', args: ['-c'], prefix: '' }
-    : { shell: 'sh', args: ['-c'], prefix: '' }
+    ? { shell: '/bin/bash', args: ['-c'], prefix: '', dialect: 'posix' }
+    : { shell: 'sh', args: ['-c'], prefix: '', dialect: 'posix' }
   return cachedShell
 }
 
@@ -513,10 +542,10 @@ export interface ShellToolOptions {
 /**
  * Create the shell tool. Permission evaluation order:
  *
- *   1. read-only whitelist (no approval)
- *   2. persistent rules — deny wins over allow, allow approves only when every
- *      subcommand of a compound matches (no approval)
- *   3. approver hook; denied by default when absent
+ *   1. persistent deny rules — always win, including over the whitelist below
+ *   2. persistent allow rules — approve only when every subcommand matches
+ *   3. read-only whitelist (no approval)
+ *   4. approver hook; denied by default when absent
  */
 export function createShellTool(options: ShellToolOptions = {}): Tool<{
   command: string
@@ -526,7 +555,7 @@ export function createShellTool(options: ShellToolOptions = {}): Tool<{
   const rules = options.rules ?? EMPTY_RULES
   // The model must know which dialect it is writing: `ls` is a wasted round-trip
   // on Windows and `Get-ChildItem` is a wasted one everywhere else.
-  const dialect = IS_WINDOWS
+  const dialectHint = IS_WINDOWS
     ? 'Commands run through PowerShell: use PowerShell syntax and cmdlets ' +
       '(Get-ChildItem, Get-Content, Select-String, $env:NAME), not cmd.exe batch syntax. '
     : 'Commands run through bash: use POSIX syntax and paths. '
@@ -537,7 +566,7 @@ export function createShellTool(options: ShellToolOptions = {}): Tool<{
   name: 'shell',
   description:
     'Execute a shell command and return its stdout and stderr. Commands run inside ' +
-    `the workspace root (or \`workdir\` relative to it). ${dialect}${readOnlyExamples} ` +
+    `the workspace root (or \`workdir\` relative to it). ${dialectHint}${readOnlyExamples} ` +
     'run without approval; anything else needs user approval. ' +
     'Output is truncated to the last 2000 lines or 50KB; a non-zero exit code is ' +
     'reported as an error. Prefer the dedicated tools (read_file, glob, grep, edit) ' +
@@ -577,18 +606,21 @@ export function createShellTool(options: ShellToolOptions = {}): Tool<{
     const cwd = workdir === undefined ? ctx.root : resolveInsideRoot(workdir, ctx)
     const timeoutMs = timeout !== undefined ? timeout * 1000 : DEFAULT_TIMEOUT_MS
 
-    // Permission chain: read-only whitelist → persistent rules (deny wins) →
-    // approver. Without an approver, anything not explicitly allowed is denied.
-    const decision = isReadOnlyCommand(command)
-      ? 'allow'
-      : evaluate(command, rules)
-    if (decision === 'deny') {
+    // Permission chain: persistent deny rules → explicit allow rules → the
+    // read-only whitelist → the approver. Deny is evaluated first, *before* the
+    // whitelist can short-circuit it: the whitelist is a convenience heuristic,
+    // and a user who has written `deny: ["cat *"]` must be able to close a hole
+    // the heuristic opens. Without an approver, anything not explicitly allowed
+    // is denied.
+    const { dialect } = resolveShell()
+    const ruled = evaluate(command, rules, dialect)
+    if (ruled === 'deny') {
       throw new Error(
         'Command blocked by a deny rule in the project configuration. ' +
           'Do not try to work around it; ask the user instead.',
       )
     }
-    if (decision === 'ask') {
+    if (ruled !== 'allow' && !isReadOnlyCommand(command, dialect)) {
       if (!ctx.approve) {
         throw new Error(
           'Command requires approval but no approver is configured. ' +

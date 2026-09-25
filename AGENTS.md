@@ -15,8 +15,11 @@ Hard constraints — violating any of these is a regression:
 - **No bundler, no `tsx`.** Source runs directly on Node >= 22.18 via built-in
   type stripping. Imports must carry the real `.ts` extension.
 - **Shell approval chain.** The shell tool evaluates commands through:
-  read-only whitelist → persistent rules (deny wins) → approver. The stored
-  history is never pruned in place; only the request projection is.
+  persistent deny rules → explicit allow rules → read-only whitelist →
+  approver. Deny is evaluated *first*, before the whitelist can short-circuit
+  it: the whitelist is a convenience heuristic, and a user who writes
+  `deny: ["cat *"]` must be able to close a hole the heuristic opens. The
+  stored history is never pruned in place; only the request projection is.
 
 ## Conversational Style
 
@@ -81,7 +84,13 @@ These rules are the project's soul. Do not "optimize" them away:
   to escape the workspace root (including `..` traversal).
 - The shell tool's read-only whitelist is security-sensitive: any change to
   `isReadOnlyCommand` needs adversarial test cases (compound commands, pipes,
-  redirections, command substitution) in `test/shell.test.ts`.
+  redirections, command substitution, and **both shell dialects** — the parser
+  is dialect-aware because bash and PowerShell disagree about escaping, and a
+  parser that believes a separator is escaped while the shell does not lets the
+  hidden command ride along on the first subcommand's allow decision) in
+  `test/shell.test.ts`. Assert both dialects explicitly rather than relying on
+  the host platform: a host-derived dialect can only ever be tested for the
+  host, which is exactly how the PowerShell escaping bug stayed invisible.
 - New tools with side effects should be reviewed for a permission level before
   being added to `createDefaultTools()`.
 

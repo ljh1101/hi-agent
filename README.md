@@ -163,15 +163,23 @@ An agent that can touch the filesystem needs a boundary:
   Windows, where the shell is `pwsh` 7 or the bundled Windows PowerShell 5.1.
   Anything else — including compound commands with a risky part (`&&`, `;`, `|`,
   a bare `&`), file redirections, command substitution and PowerShell script
-  blocks — goes through a three-layer permission system:
-  1. **Session memory**: answer `a` at a prompt and that command prefix never
-     asks again this session.
-  2. **Persistent rules**: `hi-agent.json` supports
+  blocks — goes through a permission chain:
+  1. **Persistent deny rules**: `hi-agent.json` supports
      `"permissions": { "allow": ["npm run *"], "deny": ["git push *"] }`
-     (deny wins; team-shareable via git, edited by hand).
-  3. **The approver prompt** for everything else — `y`/`a`/`n`. Without an
+     (team-shareable via git, edited by hand). Deny is checked **before** the
+     read-only whitelist, so `"deny": ["cat *"]` closes a whitelisted command
+     too — it is the only way to narrow the whitelist.
+  2. **Persistent allow rules**, matched per subcommand of a compound.
+  3. **Session memory**: answer `a` at a prompt and that command prefix never
+     asks again this session.
+  4. **The approver prompt** for everything else — `y`/`a`/`n`. Without an
      approver configured (library use), risky commands are denied by default;
      `--yes` auto-approves everything for trusted containers/CI.
+  Note what this chain is: a *consent* mechanism, not a containment boundary.
+  A read-only command can read any file the user can read, on every platform —
+  the same posture Codex (`read-only` still reads the whole disk), Gemini CLI
+  and Cursor document. Containment needs an OS sandbox, which this project does
+  not have yet.
 - **Errors over crashes.** Failures are reported to the model as observations.
 
 ## Using it as a library

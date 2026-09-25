@@ -75,7 +75,9 @@ hi-agent.json next to --root for shareable, secret-free defaults
 (baseUrl/model) that get committed with the repo.
 
 In-session commands: /reset clears history, /model switches model (or /model <id>),
-/compact summarizes old history, exit or quit leaves.
+/compact summarizes old history, /session lists or switches sessions, /undo puts
+back what the last turn changed, exit or quit leaves. Ctrl+C cancels the turn in
+flight; twice (or at the prompt) quits.
 
 Examples:
   hi-agent "What time is it, and what is 23 * 17?"
@@ -361,7 +363,27 @@ async function repl(session: SessionConfig & { yes?: boolean; store?: SessionSto
     (history) => void recordReplace(history).catch(reportWriteError),
   )
 
-  console.log('hi-agent interactive mode. Commands: /reset, /model, /session, /compact, exit. Ctrl+C quits.')
+  // Ctrl+C has to mean two different things: at the prompt it quits, during a
+  // turn it cancels the turn. Until now it could only kill the process, which
+  // threw away the work in flight and the messages not yet written. The first
+  // press aborts the run, a second press (or one at the prompt) leaves.
+  let inFlight: AbortController | undefined
+  const onInterrupt = (): void => {
+    if (inFlight && !inFlight.signal.aborted) {
+      inFlight.abort(new Error('interrupted by user'))
+      console.log(color(DIM, '\n(interrupting... press Ctrl+C again to quit)'))
+      return
+    }
+    // Closing the interface makes the pending question reject, which breaks the
+    // loop and lets the `finally` below flush the session before exiting.
+    rl.close()
+  }
+  rl.on('SIGINT', onInterrupt)
+  process.on('SIGINT', onInterrupt)
+
+  console.log(
+    'hi-agent interactive mode. Commands: /reset, /model, /session, /compact, /undo, exit. Ctrl+C interrupts a turn (twice to quit).',
+  )
   try {
     for (;;) {
       let line: string
@@ -395,21 +417,69 @@ async function repl(session: SessionConfig & { yes?: boolean; store?: SessionSto
         console.log(color(DIM, ok ? '(history compacted)' : '(compaction failed; history unchanged)'))
         continue
       }
+      if (input === '/undo') {
+        await undoLastTurn(agent)
+        continue
+      }
       try {
         await ensureSession()
-        const result = await agent.run(input)
-        if (result.stopReason !== 'final') console.log()
+        inFlight = new AbortController()
+        const result = await agent.run(input, { signal: inFlight.signal })
+        if (result.stopReason === 'aborted') {
+          console.log(color(DIM, '(turn cancelled; the conversation keeps what it did so far — /undo puts the files back)'))
+        } else if (result.stopReason !== 'final') {
+          console.log()
+        }
       } catch (error) {
         printError(error)
+      } finally {
+        inFlight = undefined
       }
     }
   } finally {
     rl.close()
+    process.off('SIGINT', onInterrupt)
     // The appends are fire-and-forget by design; quitting while one is in
     // flight would drop the turn the user just watched. Wait for them.
     await flushSessions()
   }
   if (verbose) console.log(color(DIM, 'bye'))
+}
+
+/** /undo — put back the files the last turn changed and drop its messages. */
+async function undoLastTurn(agent: Agent): Promise<void> {
+  let result
+  try {
+    result = await agent.undoLastTurn()
+  } catch (error) {
+    console.error(color(RED, `undo failed: ${error instanceof Error ? error.message : String(error)}`))
+    return
+  }
+  if (!result) {
+    console.log(color(DIM, '(nothing to undo)'))
+    return
+  }
+  const parts: string[] = []
+  if (result.restored.length) parts.push(`restored ${result.restored.join(', ')}`)
+  if (result.removed.length) parts.push(`removed ${result.removed.join(', ')}`)
+  if (result.rewound) parts.push(`dropped ${result.droppedMessages} message(s)`)
+  console.log(color(DIM, `(undone: ${parts.join('; ')})`))
+  if (!result.rewound) {
+    console.log(
+      color(
+        DIM,
+        '(the files are back, but the conversation could not be rewound: it was compacted during that turn)',
+      ),
+    )
+  }
+  if (result.restored.length === 0 && result.removed.length === 0) {
+    console.log(
+      color(
+        DIM,
+        '(the turn changed no files through the file tools — shell side effects are not tracked)',
+      ),
+    )
+  }
 }
 
 /** /session — list, switch, new. */
@@ -737,11 +807,17 @@ async function main(): Promise<void> {
   }
 
   if (options.prompt !== undefined) {
+    // One turn, but Ctrl+C should still stop it cleanly rather than kill the
+    // process mid-write: the shell tool kills its process tree on abort, and the
+    // turn ends as "aborted" instead of a stack trace.
+    const run = new AbortController()
+    const stop = (): void => run.abort(new Error('interrupted by user'))
+    process.on('SIGINT', stop)
     if (process.stdin.isTTY && !options.yes) {
       const rl = createInterface({ input: process.stdin, output: process.stdout })
       agent.setApprover(makeApprover(rl, approvalSession))
       try {
-        const result = await agent.run(options.prompt)
+        const result = await agent.run(options.prompt, { signal: run.signal })
         if (result.stopReason !== 'final') process.exitCode = 1
       } catch (error) {
         printError(error)
@@ -752,7 +828,7 @@ async function main(): Promise<void> {
       return
     }
     try {
-      const result = await agent.run(options.prompt)
+      const result = await agent.run(options.prompt, { signal: run.signal })
       if (result.stopReason !== 'final') process.exitCode = 1
     } catch (error) {
       printError(error)

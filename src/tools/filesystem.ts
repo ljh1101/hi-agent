@@ -251,11 +251,18 @@ export const writeFileTool: Tool<{ path: string; content: string }> = {
 
     // An overwrite keeps the line ending the file already had, so rewriting a
     // CRLF file does not turn it into a whole-file diff. New files use LF.
+    // The read doubles as the undo snapshot, so it must not swallow a real
+    // failure as "the file is new".
     let eol: LineEnding = '\n'
+    let before: string | null = null
     try {
-      eol = detectLineEnding(await readFile(absolute, 'utf8'))
-    } catch {
-      eol = '\n'
+      before = await readFile(absolute, 'utf8')
+      eol = detectLineEnding(before)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(`Cannot read "${target}": ${describeError(error)}`)
+      }
+      before = null
     }
     const payload = applyLineEnding(normalizeLineEndings(content), eol)
 
@@ -265,6 +272,7 @@ export const writeFileTool: Tool<{ path: string; content: string }> = {
     } catch (error) {
       throw new Error(`Cannot write "${target}": ${describeError(error)}`)
     }
+    ctx.recordChange?.({ path: displayPath(absolute, ctx), before, after: payload })
     return `Wrote ${Buffer.byteLength(payload)} bytes to ${displayPath(absolute, ctx)}.`
   },
 }

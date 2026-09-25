@@ -91,6 +91,7 @@ export const editTool: Tool<{ path: string; old_string: string; new_string: stri
     } catch (error) {
       throw new Error(`Cannot write "${target}": ${describeError(error)}`)
     }
+    ctx.recordChange?.({ path: displayPath(absolute, ctx), before: raw, after: updated })
     return `Edited ${displayPath(absolute, ctx)} (${occurrences} replacement).`
   },
 }

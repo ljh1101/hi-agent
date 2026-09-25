@@ -156,7 +156,17 @@ An agent that can touch the filesystem needs a boundary:
 - **No `eval`.** Model-supplied expressions are parsed against a fixed grammar
   and a whitelist of math functions.
 - **Bounded cost.** `--max-steps` caps the number of model round-trips per turn,
-  every model request has a 120s timeout, every tool a 30s timeout.
+  every tool has a 30s timeout, and a streaming request gives up after 120s of
+  *silence* — a long but healthy answer is never cut off mid-sentence, while a
+  provider that stops sending is dropped (non-streaming requests keep a 120s
+  total budget, since there is no progress to observe).
+- **Interruptible.** Ctrl+C during a turn cancels it: the shell tool kills its
+  process tree, in-flight scans stop, and the turn ends as *aborted* instead of
+  killing the process. A second Ctrl+C (or one at the prompt) quits.
+- **Undoable.** `/undo` restores the files the last turn changed through the file
+  tools and drops that turn from the conversation, so the next request does not
+  describe code that no longer exists. It walks back one turn at a time. Shell
+  side effects are not tracked — for those, use git.
 - **Approval gate.** The `shell` tool runs a built-in read-only whitelist
   without asking — the POSIX set (`ls`, `cat`, `grep`, `git status`, ...), plus a
   PowerShell set (`Get-ChildItem`, `Get-Content`, `Select-String`, ...) on
@@ -240,6 +250,7 @@ src/
   llm.ts               OpenAI-compatible client + retry/backoff + SSE streaming
   context.ts           request projection + token accounting + LLM compaction
   session.ts           JSONL session persistence (list / switch / resume)
+  changes.ts           undo journal: what each turn wrote, and how to put it back
   prompts/system.ts    system prompt assembly (identity, tools section, rules)
   config.ts            global vs project config loading + secret resolution
   providers.ts         provider presets + `/models` discovery

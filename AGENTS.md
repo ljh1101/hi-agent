@@ -41,7 +41,8 @@ Hard constraints — violating any of these is a regression:
 | `src/llm.ts` | OpenAI-compatible client + retry/backoff + SSE streaming | Swap providers by editing this file only |
 | `src/context.ts` | Request projection + token accounting + LLM compaction | History is the source of truth; the model only ever sees a projection. Compaction is the one operation that intentionally rewrites history — failure must leave it untouched |
 | `src/prompts/system.ts` | System prompt assembly: identity, tools section, rules | Tools section is built from each tool's `promptSnippet`/`promptGuidelines`; prompt copy lives here, not in `agent.ts` |
-| `src/session.ts` | JSONL session persistence | Appends are the common case; compaction APPENDS a snapshot line (pre-compaction lines stay on disk, replay resumes from the last snapshot). One-shot prompt mode never persists |
+| `src/session.ts` | JSONL session persistence | Appends are the common case; compaction APPENDS a snapshot line (pre-compaction lines stay on disk, replay resumes from the last snapshot). Writes are serialized per file — replay order must match the order the loop produced it. One-shot prompt mode never persists |
+| `src/changes.ts` | Undo journal: what each turn wrote | Only the file tools are covered. A write tool that does not call `ctx.recordChange` makes its own change un-undoable |
 | `src/config.ts` | Config layering (CLI > env > project > global) | Secrets resolve here, never in the loop |
 | `src/providers.ts` | Provider presets + `/models` listing | |
 | `src/permissions.ts` | Shell prefix rules (allow / deny, deny wins) | |
@@ -101,7 +102,13 @@ These rules are the project's soul. Do not "optimize" them away:
   the host platform: a host-derived dialect can only ever be tested for the
   host, which is exactly how the PowerShell escaping bug stayed invisible.
 - New tools with side effects should be reviewed for a permission level before
-  being added to `createDefaultTools()`.
+  being added to `createDefaultTools()`, and a tool that writes a file must call
+  `ctx.recordChange` with the content it replaced, or `/undo` silently cannot
+  reverse it.
+- Cancellation is a first-class path: a run's signal reaches the LLM client and
+  every tool, and a cancelled tool call still produces an observation. Do not
+  skip the observation — the history must stay replayable, and an assistant
+  message with unanswered `tool_calls` is rejected by every provider.
 
 ## Commands
 

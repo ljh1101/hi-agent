@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import { test } from 'node:test'
-import { backoffDelay, LLMError, OpenAICompatibleLLM, parseRetryAfter } from '../src/llm.ts'
+import {
+  backoffDelay,
+  LLMError,
+  OpenAICompatibleLLM,
+  parseRetryAfter,
+  startIdleTimeout,
+} from '../src/llm.ts'
 import type { ChatMessage, StreamEvent, ToolDefinition } from '../src/types.ts'
 import { serveFakeProvider } from './helpers.ts'
 
@@ -314,6 +321,98 @@ test('aborts the backoff delay when the external signal fires', async () => {
 function sse(events: string[]): string {
   return events.map((event) => `data: ${event}\n\n`).join('') + 'data: [DONE]\n\n'
 }
+
+/**
+ * Serve an SSE body in timed chunks. `serveFakeProvider` answers in one burst,
+ * which cannot express "slow but still making progress" — the difference the
+ * streaming deadline is supposed to measure.
+ */
+async function serveTrickle(
+  frames: string[],
+  gapMs: number,
+  stallMs: number,
+  run: (baseURL: string) => Promise<void>,
+): Promise<void> {
+  const server = createServer(async (_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' })
+    for (const frame of frames) {
+      response.write(`data: ${frame}\n\n`)
+      await new Promise((resolve) => setTimeout(resolve, gapMs))
+    }
+    if (stallMs > 0) await new Promise((resolve) => setTimeout(resolve, stallMs))
+    response.write('data: [DONE]\n\n')
+    response.end()
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  try {
+    await run(`http://127.0.0.1:${address.port}/v1`)
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    )
+  }
+}
+
+test('startIdleTimeout measures silence, not total duration', async () => {
+  const idle = startIdleTimeout(60)
+  const ticks = setInterval(() => idle.keepAlive(), 20)
+  await new Promise((resolve) => setTimeout(resolve, 240))
+  clearInterval(ticks)
+  assert.equal(idle.timedOut(), false, 'steady progress must keep the request alive')
+  assert.equal(idle.signal.aborted, false)
+  idle.dispose()
+})
+
+test('startIdleTimeout fires once the silence outlasts the deadline', async () => {
+  const idle = startIdleTimeout(40)
+  await new Promise((resolve) => setTimeout(resolve, 160))
+  assert.equal(idle.timedOut(), true)
+  assert.equal(idle.signal.aborted, true)
+  idle.dispose()
+})
+
+test('a slow stream that keeps sending is not cut off', async () => {
+  // Measured before this: a provider trickling a body for 1s with a 300ms
+  // timeout was killed at ~300ms mid-answer, because the bound covered the
+  // whole request instead of the gaps in it.
+  const frames = Array.from({ length: 8 }, (_, i) =>
+    JSON.stringify({ choices: [{ delta: { content: `c${i} ` }, finish_reason: null }] }),
+  )
+  await serveTrickle(frames, 60, 0, async (baseURL) => {
+    const llm = new OpenAICompatibleLLM({ apiKey: 'k', baseURL, model: 'm', timeoutMs: 200 })
+    const started = Date.now()
+    let content = ''
+    for await (const event of llm.stream!([{ role: 'user', content: 'hi' }], [])) {
+      if (event.type === 'delta') content += event.delta
+    }
+    const elapsed = Date.now() - started
+    assert.ok(elapsed > 200, `the stream outlasted the timeout (${elapsed}ms), which is the point`)
+    assert.equal(content.trim(), 'c0 c1 c2 c3 c4 c5 c6 c7')
+  })
+})
+
+test('a stalled stream fails with a typed, explainable error', async () => {
+  const frames = [JSON.stringify({ choices: [{ delta: { content: 'partial ' } }] })]
+  await serveTrickle(frames, 10, 1_000, async (baseURL) => {
+    const llm = new OpenAICompatibleLLM({ apiKey: 'k', baseURL, model: 'm', timeoutMs: 150 })
+    await assert.rejects(
+      async () => {
+        for await (const _event of llm.stream!([{ role: 'user', content: 'hi' }], [])) {
+          // drain
+        }
+      },
+      (error: unknown) => {
+        // Previously a bare DOMException ("The operation was aborted due to
+        // timeout") escaped, so the CLI's error hints never fired.
+        assert.ok(error instanceof LLMError, `expected an LLMError, got ${String(error)}`)
+        assert.match((error as Error).message, /stalled for 150ms/)
+        return true
+      },
+    )
+  })
+})
 
 test('streams content deltas, tool calls, and a final done event', async () => {
   const raw = sse([

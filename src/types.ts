@@ -119,6 +119,43 @@ export interface ToolContext {
    * shell command) so the approver can remember prefixes.
    */
   approve?: (request: string, command?: string) => Promise<boolean>
+  /**
+   * Report a file the tool just changed, so the run can be undone.
+   *
+   * Write-capable filesystem tools must call this with the content they
+   * replaced: the mechanism is honest only if every writer participates, and a
+   * tool that forgets simply makes its own change un-undoable.
+   */
+  recordChange?: (change: FileChange) => void
+}
+
+/**
+ * One file change made by a tool, in a form that can be reversed.
+ *
+ * `null` on either side is meaningful: `before: null` means the file did not
+ * exist (so undo removes it), `after: null` means the tool removed it.
+ */
+export interface FileChange {
+  /** Path relative to the workspace root, POSIX separators (display form). */
+  path: string
+  before: string | null
+  after: string | null
+}
+
+/** What an undo actually did, for the UI to report. */
+export interface UndoResult {
+  /** Files put back to their previous content. */
+  restored: string[]
+  /** Files removed because the turn created them. */
+  removed: string[]
+  /** Conversation messages dropped with the turn. */
+  droppedMessages: number
+  /**
+   * Whether the conversation was rewound. False when the history was rewritten
+   * under the turn (compaction summarized it away), so the pre-turn state no
+   * longer exists and only the files could be restored.
+   */
+  rewound: boolean
 }
 
 /** Risk level of a tool, driving the approval gate. */

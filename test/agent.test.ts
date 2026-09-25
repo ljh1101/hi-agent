@@ -1,9 +1,29 @@
 ﻿import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { existsSync } from 'node:fs'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import { after } from 'node:test'
 import { Agent, DEFAULT_SYSTEM_PROMPT } from '../src/agent.ts'
 import { calculatorTool } from '../src/tools/calculator.ts'
+import { editTool } from '../src/tools/edit.ts'
+import { writeFileTool } from '../src/tools/filesystem.ts'
+import { createDefaultTools } from '../src/tools/index.ts'
 import type { AgentEvent, ChatMessage, ChatOptions, LLM, LLMResponse, StreamEvent, Tool, ToolDefinition } from '../src/types.ts'
 import { ScriptedLLM, StreamingLLM, reply, streamText, toolCall } from './helpers.ts'
+
+const scratchDirs: string[] = []
+
+/** A workspace root that exists on disk, for the tests that touch real files. */
+async function makeRoot(): Promise<string> {
+  const root = await mkdtemp(path.join(process.cwd(), '.tmp-undo-'))
+  scratchDirs.push(root)
+  return root
+}
+
+after(async () => {
+  await Promise.all(scratchDirs.map((dir) => rm(dir, { recursive: true, force: true })))
+})
 
 const echoTool: Tool<{ text: string }> = {
   name: 'echo',
@@ -513,6 +533,284 @@ test('when compaction fails, the request is projected down instead of sent as is
   )
   // The stored history keeps full fidelity; only the request was trimmed.
   assert.equal(agent.history.find((m) => m.role === 'tool')?.content?.length, huge.length + 6)
+})
+
+// ---------------------------------------------------------------------------
+// Cancellation
+// ---------------------------------------------------------------------------
+
+test('a per-run signal cancels the turn without touching the constructor default', async () => {
+  const llm = new ScriptedLLM([reply('should not be reached')])
+  const agent = new Agent({ llm, tools: [echoTool] })
+  const controller = new AbortController()
+  controller.abort(new Error('user pressed Ctrl+C'))
+
+  const result = await agent.run('go', { signal: controller.signal })
+  assert.equal(result.stopReason, 'aborted')
+  assert.equal(llm.requests.length, 0, 'a cancelled turn must not call the model')
+})
+
+test('cancelling mid-turn still leaves every tool call answered', async () => {
+  // The history has to stay replayable: an assistant message whose tool_calls
+  // have no matching tool messages is rejected by the provider on the *next*
+  // request, so a cancelled call reports the cancellation as its observation.
+  const controller = new AbortController()
+  const abortingTool: Tool<{ text: string }> = {
+    name: 'echo',
+    description: 'Aborts the run, as a Ctrl+C would while a tool runs.',
+    parameters: { type: 'object', properties: { text: { type: 'string' } } },
+    execute() {
+      controller.abort(new Error('interrupted'))
+      return 'started'
+    },
+  }
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('echo', { text: 'a' }, 'call_a'), toolCall('echo', { text: 'b' }, 'call_b')),
+    reply('never asked'),
+  ])
+  const agent = new Agent({ llm, tools: [abortingTool] })
+
+  const result = await agent.run('go', { signal: controller.signal })
+  assert.equal(result.stopReason, 'aborted')
+
+  const assistant = agent.history.find((m) => m.tool_calls?.length)
+  assert.equal(assistant?.tool_calls?.length, 2)
+  const results = agent.history.filter((m) => m.role === 'tool')
+  assert.deepEqual(
+    results.map((m) => m.tool_call_id),
+    ['call_a', 'call_b'],
+    'both calls must be answered',
+  )
+  assert.match(results[1]!.content ?? '', /cancelled before this call ran/)
+  assert.equal(llm.requests.length, 1, 'no further model call after the abort')
+})
+
+test('an abort stops work in flight instead of waiting for it', async () => {
+  // The point of Ctrl+C: the shell tool kills the process tree, so a cancelled
+  // turn does not sit there until the command finishes. Verified end to end
+  // against a real 10s command, aborted after 500ms.
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('shell', { command: 'node -e "setTimeout(() => {}, 10000)"' })),
+    reply('never reached'),
+  ])
+  const agent = new Agent({
+    llm,
+    tools: createDefaultTools(),
+    approver: async () => true,
+    stream: false,
+  })
+  const controller = new AbortController()
+  const started = Date.now()
+  const timer = setTimeout(() => controller.abort(new Error('interrupted')), 500)
+
+  try {
+    const result = await agent.run('run something slow', { signal: controller.signal })
+    const elapsed = Date.now() - started
+    assert.equal(result.stopReason, 'aborted')
+    assert.ok(elapsed < 5_000, `the command should be killed, took ${elapsed}ms`)
+    assert.equal(llm.requests.length, 1, 'no model call after the abort')
+    assert.match(agent.history.find((m) => m.role === 'tool')?.content ?? '', /aborted/)
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+
+test('undo puts back the files a turn changed and drops its messages', async () => {
+  const root = await makeRoot()
+  const file = path.join(root, 'notes.txt')
+  await writeFile(file, 'original')
+
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('write_file', { path: 'notes.txt', content: 'changed' })),
+    reply('done'),
+  ])
+  const agent = new Agent({ llm, tools: [writeFileTool as Tool], root })
+  const mark = agent.history.length
+  await agent.run('change the file')
+  assert.equal(await readFile(file, 'utf8'), 'changed')
+  assert.ok(agent.history.length > mark)
+
+  const undone = await agent.undoLastTurn()
+  assert.ok(undone)
+  assert.deepEqual(undone.restored, ['notes.txt'])
+  assert.equal(await readFile(file, 'utf8'), 'original', 'content is back')
+  assert.equal(agent.history.length, mark, 'the turn is gone from the conversation')
+  assert.ok(undone.droppedMessages > 0)
+
+  assert.equal(await agent.undoLastTurn(), undefined, 'nothing left to undo')
+})
+
+test('undo removes files the turn created', async () => {
+  const root = await makeRoot()
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('write_file', { path: 'fresh/created.txt', content: 'new' })),
+    reply('done'),
+  ])
+  const agent = new Agent({ llm, tools: [writeFileTool as Tool], root })
+  await agent.run('create it')
+  assert.ok(existsSync(path.join(root, 'fresh/created.txt')))
+
+  const undone = await agent.undoLastTurn()
+  assert.deepEqual(undone?.removed, ['fresh/created.txt'])
+  assert.equal(existsSync(path.join(root, 'fresh/created.txt')), false)
+})
+
+test('undo restores the exact bytes an edit replaced, line endings included', async () => {
+  const root = await makeRoot()
+  const file = path.join(root, 'crlf.txt')
+  const original = 'first\r\nsecond\r\n'
+  await writeFile(file, original)
+
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('edit', { path: 'crlf.txt', old_string: 'second', new_string: 'SECOND' })),
+    reply('done'),
+  ])
+  const agent = new Agent({ llm, tools: [editTool as Tool], root })
+  await agent.run('edit it')
+  assert.equal(await readFile(file, 'utf8'), 'first\r\nSECOND\r\n')
+
+  await agent.undoLastTurn()
+  assert.equal(await readFile(file, 'utf8'), original, 'CRLF survives the round trip')
+})
+
+test('undo walks back one turn at a time, newest first', async () => {
+  const root = await makeRoot()
+  const file = path.join(root, 'log.txt')
+  await writeFile(file, 'v0')
+
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('write_file', { path: 'log.txt', content: 'v1' })),
+    reply('one'),
+    reply(null, toolCall('write_file', { path: 'log.txt', content: 'v2' })),
+    reply('two'),
+  ])
+  const agent = new Agent({ llm, tools: [writeFileTool as Tool], root })
+  await agent.run('first change')
+  await agent.run('second change')
+  assert.equal(await readFile(file, 'utf8'), 'v2')
+
+  await agent.undoLastTurn()
+  assert.equal(await readFile(file, 'utf8'), 'v1')
+  await agent.undoLastTurn()
+  assert.equal(await readFile(file, 'utf8'), 'v0')
+  assert.equal(await agent.undoLastTurn(), undefined)
+})
+
+test('a file written twice in one turn is restored to its pre-turn content', async () => {
+  const root = await makeRoot()
+  const file = path.join(root, 'twice.txt')
+  await writeFile(file, 'before-turn')
+
+  const llm = new ScriptedLLM([
+    reply(
+      null,
+      toolCall('write_file', { path: 'twice.txt', content: 'first write' }, 'c1'),
+      toolCall('write_file', { path: 'twice.txt', content: 'second write' }, 'c2'),
+    ),
+    reply('done'),
+  ])
+  const agent = new Agent({ llm, tools: [writeFileTool as Tool], root })
+  await agent.run('write it twice')
+  assert.equal(await readFile(file, 'utf8'), 'second write')
+
+  await agent.undoLastTurn()
+  assert.equal(await readFile(file, 'utf8'), 'before-turn', 'undone in reverse order')
+})
+
+test('undo tells the persistence layer, so a resume agrees', async () => {
+  const root = await makeRoot()
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('write_file', { path: 'x.txt', content: 'x' })),
+    reply('done'),
+  ])
+  const agent = new Agent({ llm, tools: [writeFileTool as Tool], root })
+  const snapshots: Array<readonly ChatMessage[]> = []
+  agent.setPersistenceHooks(
+    () => {},
+    (history) => snapshots.push([...history]),
+  )
+  await agent.run('write it')
+  await agent.undoLastTurn()
+
+  assert.equal(snapshots.length, 1, 'the session file must be told about the rewind')
+  assert.ok(!snapshots[0]!.some((m) => m.role === 'tool'), 'the undone tool result is not in it')
+})
+
+test('undo survives a compaction that happened during the turn', async () => {
+  // The turn's boundary used to be a history *index* taken at its start. When
+  // compaction rewrote the history mid-turn that index pointed past the end:
+  // measured, the rewind left 44 holes in the array, reported a negative
+  // droppedMessages, and made the next request throw "Cannot read properties of
+  // undefined (reading 'role')". It is now a message reference, and when the
+  // referenced message is gone the rewind is refused rather than guessed.
+  const root = await makeRoot()
+  const file = path.join(root, 'a.txt')
+  await writeFile(file, 'ORIGINAL')
+  const payload = 'z'.repeat(12_000)
+  const warmTurn = (label: string): LLMResponse[] => [
+    reply(null, toolCall('write_file', { path: 'a.txt', content: `${payload}-${label}` }, `c-${label}`)),
+    reply(`${label} done`),
+  ]
+
+  const warmReplies: LLMResponse[] = []
+  for (let i = 0; i < 4; i++) warmReplies.push(...warmTurn(`w${i}`))
+  const warm = new Agent({
+    llm: new ScriptedLLM(warmReplies),
+    tools: [writeFileTool as Tool],
+    root,
+    maxSteps: 4,
+  })
+  for (let i = 0; i < 4; i++) await warm.run(`warm ${i}`)
+
+  const agent = new Agent({
+    llm: new ScriptedLLM([
+      reply(null, toolCall('write_file', { path: 'a.txt', content: `${payload}-final` }, 'c-f')),
+      reply('SUMMARY-OF-EVERYTHING'),
+      reply('final answer'),
+    ]),
+    tools: [writeFileTool as Tool],
+    root,
+    maxSteps: 4,
+    // A threshold the next turn's tool call crosses, so compaction fires
+    // *inside* the turn being undone and the history shrinks below the mark.
+    compaction: {
+      contextWindow: 1_000_000,
+      reserveTokens: warm.estimateContextTokens() + 40,
+      keepRecentTokens: 30,
+    },
+  })
+  agent.restoreHistory(warm.history)
+  const before = agent.history.length
+  await agent.run('the last turn')
+  assert.ok(agent.history.length < before, 'precondition: compaction rewrote the history')
+
+  const undone = await agent.undoLastTurn()
+  assert.ok(undone)
+  assert.equal(undone.rewound, false, 'the pre-turn state is gone, so no rewind is attempted')
+  assert.equal(undone.droppedMessages, 0)
+  assert.equal(
+    agent.history.length,
+    Object.keys(agent.history).length,
+    'no holes in the history',
+  )
+  assert.doesNotThrow(() => agent.estimateContextTokens())
+  assert.equal(await readFile(file, 'utf8'), `${payload}-w3`, 'the files are restored anyway')
+})
+
+test('reset drops undo history along with the conversation', async () => {
+  const root = await makeRoot()
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('write_file', { path: 'y.txt', content: 'y' })),
+    reply('done'),
+  ])
+  const agent = new Agent({ llm, tools: [writeFileTool as Tool], root })
+  await agent.run('write it')
+  agent.reset()
+  assert.equal(await agent.undoLastTurn(), undefined)
 })
 
 test('compaction failure leaves the history untouched', async () => {

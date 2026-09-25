@@ -49,6 +49,7 @@ Hard constraints — violating any of these is a regression:
 | `src/command-parse.ts` | Shell command splitting + leading-word extraction | Quoting-aware; shared by shell and permissions |
 | `src/tools/*` | Tool set (registry, calculator, filesystem, search, edit, shell, time) | Each tool is one object |
 | `src/cli.ts` | Entry point, arg parsing, interactive REPL, approval prompts | |
+| `doc/` | Per-module design docs, bilingual `zh/` + `en/` (`doc/README.md` is the language index) | Updated in the same change as any behavior change, both languages — see Documentation |
 
 ## Design Principles
 
@@ -77,9 +78,22 @@ These rules are the project's soul. Do not "optimize" them away:
   `namespace`, parameter properties, or `import =`. Imports use `.ts` extensions.
 - No inline imports (`await import()`, dynamic type imports).
 - **Always ask before removing functionality or code that appears intentional.**
-  Unimplemented capabilities (context compaction via LLM summary, persistence,
-  parallel execution, sub-agents, MCP) are on the roadmap, not gaps to fill
-  silently — propose before adding.
+  Capabilities still on the roadmap (parallel tool execution, long-term memory,
+  sub-agents, MCP) are not gaps to fill silently — propose before adding.
+
+## Documentation
+
+- `doc/` holds the per-module design docs in **two mirrored languages**:
+  `doc/zh/` (Chinese) and `doc/en/` (English); `doc/README.md` is the
+  language index. The top-level `README.md` is the user-facing overview.
+- **Code and docs move together.** A change that alters behavior, public
+  interfaces, defaults, safety boundaries, or on-disk formats must update
+  `README.md` and the relevant `doc/*.md` sections — **in both `doc/zh/`
+  and `doc/en/`** — in the same change. A code change without its doc
+  update, or a doc update that lands in only one language, is incomplete.
+- Docs reference file and function names, never line numbers.
+- If code and docs disagree, fix whichever is wrong in the same session; do
+  not leave the contradiction standing.
 
 ## Safety Boundaries
 

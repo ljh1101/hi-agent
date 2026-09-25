@@ -1,8 +1,10 @@
 ﻿import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { symlinkSync } from 'node:fs'
 import path from 'node:path'
 import { after, test } from 'node:test'
 import { listDirTool, readFileTool, writeFileTool } from '../src/tools/filesystem.ts'
+import { editTool } from '../src/tools/edit.ts'
 import { currentTimeTool } from '../src/tools/time.ts'
 import type { ToolContext } from '../src/types.ts'
 
@@ -82,6 +84,47 @@ test('tools cannot escape the workspace root', async () => {
   await assert.rejects(async () => {
     await readFileTool.execute({ path: '   ' }, ctx)
   }, /non-empty string/)
+})
+
+test('a link inside the root cannot be used to escape it', async () => {
+  // Lexical confinement passes a link: `link/secret.txt` is inside the root as
+  // a string, but the read follows the link out. Measured before the fix, a
+  // junction at `<root>/link` made read_file return a file outside the root.
+  const ctx = await makeRoot()
+  const outside = await mkdtemp(path.join(process.cwd(), '.tmp-tools-out-'))
+  scratchDirs.push(outside)
+  await writeFile(path.join(outside, 'secret.txt'), 'SECRET=outside-the-root')
+
+  const link = path.join(ctx.root, 'link')
+  try {
+    symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch {
+    return // a platform/permission that forbids links cannot be tested here
+  }
+
+  // Reading, writing, listing and editing all refuse to follow it out.
+  for (const path_ of ['link/secret.txt', 'link/new.txt']) {
+    await assert.rejects(
+      async () => await readFileTool.execute({ path: path_ }, ctx),
+      /through a link/,
+    )
+    await assert.rejects(
+      async () => await writeFileTool.execute({ path: path_, content: 'x' }, ctx),
+      /through a link/,
+    )
+  }
+  await assert.rejects(async () => await listDirTool.execute({ path: 'link' }, ctx), /through a link/)
+  await assert.rejects(
+    async () =>
+      await editTool.execute({ path: 'link/secret.txt', old_string: 'SECRET', new_string: 'X' }, ctx),
+    /through a link/,
+  )
+  // The file outside the root is untouched.
+  assert.equal(await readFile(path.join(outside, 'secret.txt'), 'utf8'), 'SECRET=outside-the-root')
+
+  // Ordinary paths still work, including one that does not exist yet.
+  await writeFileTool.execute({ path: 'sub/ok.txt', content: 'ok' }, ctx)
+  assert.equal(await readFileTool.execute({ path: 'sub/ok.txt' }, ctx), 'ok')
 })
 
 test('empty files and directories get a readable placeholder', async () => {

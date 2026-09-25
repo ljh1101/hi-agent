@@ -11,7 +11,9 @@ Hard constraints — violating any of these is a regression:
 - **No `eval`.** Model-supplied expressions go through the recursive-descent
   parser in `src/tools/calculator.ts`.
 - **Filesystem safety.** Every filesystem tool must resolve paths through
-  `resolveInsideRoot` and refuse to escape the workspace root.
+  `resolveToolPath` and refuse to escape the workspace root. The boundary is on
+  the *file tools*, not on the shell: a read-only shell command can read any
+  path the user can read (see "Safety Boundaries" below).
 - **No bundler, no `tsx`.** Source runs directly on Node >= 22.18 via built-in
   type stripping. Imports must carry the real `.ts` extension.
 - **Shell approval chain.** The shell tool evaluates commands through:
@@ -80,8 +82,15 @@ These rules are the project's soul. Do not "optimize" them away:
 
 ## Safety Boundaries
 
-- Every filesystem tool must resolve paths through `resolveInsideRoot` and refuse
-  to escape the workspace root (including `..` traversal).
+- Every filesystem tool must resolve paths through `resolveToolPath` and refuse
+  to escape the workspace root, whether by `..` traversal (lexical, in
+  `resolveInsideRoot`) or through a symlink/junction pointing out of the root
+  (resolved, in `resolveToolPath`). Never call `resolveInsideRoot` directly from
+  a tool: it cannot see links.
+- The shell's child process gets `childEnv()`, an allowlist, not `process.env`.
+  Never spread `process.env` into `spawn`: Node replaces rather than merges, so a
+  spread hands the model every secret the process holds (CWE-526), including the
+  agent's own API key.
 - The shell tool's read-only whitelist is security-sensitive: any change to
   `isReadOnlyCommand` needs adversarial test cases (compound commands, pipes,
   redirections, command substitution, and **both shell dialects** — the parser

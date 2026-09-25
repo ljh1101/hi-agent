@@ -9,7 +9,8 @@
  */
 
 export const IDENTITY = 'You are hi-agent, a general-purpose agent that solves tasks by calling tools. ' +
-  'You operate inside a workspace root: all file paths are relative to it, and you cannot touch anything outside.'
+  'You operate inside a workspace root: paths given to the file tools are relative to it and cannot leave ' +
+  'it, and shell commands start there.'
 
 export const RULES = [
   'Never guess a fact that a tool could give you; call the tool instead.',

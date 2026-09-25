@@ -180,6 +180,16 @@ An agent that can touch the filesystem needs a boundary:
   the same posture Codex (`read-only` still reads the whole disk), Gemini CLI
   and Cursor document. Containment needs an OS sandbox, which this project does
   not have yet.
+- **The shell does not inherit your secrets.** The child process gets an
+  allowlisted environment (PATH, home, temp, locale, proxies), so the agent's
+  own API key cannot be read back with `echo $env:AGENT_API_KEY`. Variables that
+  influence execution (`LD_PRELOAD`, `NODE_OPTIONS`, ...) are excluded too. If a
+  command of yours legitimately needs some other variable, it will not see it —
+  that is the intended trade.
+- **File tools refuse to leave the root, links included.** `..` traversal is
+  rejected lexically, and a symlink or junction inside the root that points
+  outside it is resolved and rejected as well. The shell is not bound by this;
+  see the consent note above.
 - **Errors over crashes.** Failures are reported to the model as observations.
 
 ## Using it as a library

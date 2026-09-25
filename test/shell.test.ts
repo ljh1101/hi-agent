@@ -503,6 +503,35 @@ test('runs a read-only command without consulting approve', async () => {
   assert.equal(approved, 0, 'read-only command must skip the approval gate')
 })
 
+test('the child shell does not inherit secrets from the parent environment', async () => {
+  // Node replaces rather than merges `env`, so an omitted `env` handed the
+  // child everything — `echo $env:AGENT_API_KEY` returned this process's own
+  // key with no approval prompt. The child now gets an allowlist.
+  const ctx = await makeRoot()
+  process.env.AGENT_API_KEY = 'sk-live-MUST-NOT-REACH-THE-CHILD'
+  process.env.LD_PRELOAD = '/tmp/evil.so'
+  try {
+    const probe = isWindows ? 'echo $env:AGENT_API_KEY' : 'echo $AGENT_API_KEY'
+    const secret = await shellTool.execute({ command: probe }, ctx)
+    assert.doesNotMatch(secret, /sk-live-MUST-NOT-REACH-THE-CHILD/)
+
+    const preload = isWindows ? 'echo $env:LD_PRELOAD' : 'echo $LD_PRELOAD'
+    assert.doesNotMatch(await shellTool.execute({ command: preload }, ctx), /evil\.so/)
+
+    // Positive control: the environment is still functional — PATH survived, so
+    // a program can be found and run. (`node` is not whitelisted, hence the
+    // approver.)
+    const ran = await shellTool.execute(
+      { command: 'node -e "console.log(1+1)"' },
+      { ...ctx, approve: async () => true },
+    )
+    assert.match(ran, /2/)
+  } finally {
+    delete process.env.AGENT_API_KEY
+    delete process.env.LD_PRELOAD
+  }
+})
+
 test('a deny rule beats the read-only whitelist', async () => {
   // The whitelist is a convenience heuristic; a user who writes a deny rule
   // must be able to close a hole in it. Before this, the whitelist decided

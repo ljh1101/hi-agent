@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import path, { join } from 'node:path'
 import type { Tool } from '../types.ts'
 import { EMPTY_RULES, evaluate, type PermissionRules } from '../permissions.ts'
-import { resolveInsideRoot } from './filesystem.ts'
+import { resolveToolPath } from './filesystem.ts'
 import {
   commandLeaders,
   defaultDialect,
@@ -28,12 +28,28 @@ const IS_WINDOWS = process.platform === 'win32'
  * subcommand of a compound command) is read-only, has no redirection, and does
  * not contain command substitution.
  *
- * This set is shared by both dialects and stays valid on Windows: there these
- * names resolve to PowerShell aliases (`ls` → Get-ChildItem, `type` →
- * Get-Content, `diff` → Compare-Object, `sort` → Sort-Object), all read-only,
- * and where a name does not exist (`head`, `wc`, `which`, ...) it costs one
- * failed call, never an approval prompt. A GNU coreutils install on PATH is
- * read-only for the same names.
+ * This set is shared by both dialects, which means each name has to be read-only
+ * under *either* resolution. Measured on Windows with Git for Windows installed
+ * (which is the normal case for this project's users), the names split three
+ * ways and only the first is the comfortable case:
+ *
+ *   - PowerShell aliases: `ls`, `cat`, `type`, `echo`, `pwd`, `cd`, `diff`,
+ *     `sort` — read-only cmdlets, and aliases win over anything on PATH.
+ *   - GNU coreutils from Git's `usr/bin`: `head`, `tail`, `grep`, `find`, `wc`,
+ *     `which`, `stat`, `du`, `uniq`, `printf`, `dirname`, `basename`,
+ *     `realpath` — these run with GNU *flag* semantics on Windows too, so every
+ *     flag guard written for POSIX applies there as well and must stay exact.
+ *   - Absent: `whereis` — the one name that costs a failed call rather than an
+ *     approval prompt.
+ *
+ * `cd` is included deliberately: it changes the working directory of the rest of
+ * the line and so lets a relative path reach outside the root, but it cannot
+ * itself write, and a plain absolute path (`cat /etc/shadow`) reaches exactly
+ * the same places. It is the same property as the documented read posture, not
+ * a hole of its own — narrow it with a `deny` rule if you want it gone.
+ *
+ * This set is a *consent* heuristic, not a containment boundary: every name on
+ * it can read any path the user can read, on every platform.
  */
 const READ_ONLY_COMMANDS = new Set([
   'ls',
@@ -415,6 +431,84 @@ function killProcessTree(pid: number): void {
 }
 
 /**
+ * Environment variable names the child shell inherits.
+ *
+ * Node REPLACES rather than merges `options.env`, so omitting it hands the child
+ * everything this process has — including the agent's own API key, which
+ * `echo $env:AGENT_API_KEY` then returns with no approval prompt at all
+ * (measured). The list below is what a shell and ordinary tools need to run;
+ * nothing that carries a credential, and nothing that influences execution is
+ * on it.
+ *
+ * Copy by name, never by spreading `process.env`: a spread exposes every secret
+ * the process has, including ones added later (CWE-526). This is not a
+ * containment boundary — a secret in a file is still readable, and a tool that
+ * needs a variable that is missing here will fail rather than leak. Extend the
+ * list deliberately.
+ */
+const CHILD_ENV_ALLOWLIST: readonly string[] = [
+  // Program lookup and the shell itself.
+  'PATH',
+  'Path',
+  'PATHEXT',
+  'SHELL',
+  'COMSPEC',
+  'SystemRoot',
+  'SystemDrive',
+  'windir',
+  // Home and temp: tools read their own config and write caches here.
+  'HOME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'USERNAME',
+  'USER',
+  'LOGNAME',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+  // Locale and terminal: affect formatting only.
+  'LANG',
+  'LANGUAGE',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+  'TZ',
+  'COLUMNS',
+  'LINES',
+  'NO_COLOR',
+  'FORCE_COLOR',
+  'CLICOLOR',
+  'CLICOLOR_FORCE',
+  // Windows shell folders and machine facts that tools assume are present.
+  'APPDATA',
+  'LOCALAPPDATA',
+  'PROGRAMDATA',
+  'PROGRAMFILES',
+  'PROGRAMFILES(X86)',
+  'PROGRAMW6432',
+  'NUMBER_OF_PROCESSORS',
+  'PROCESSOR_ARCHITECTURE',
+  // Egress proxies: without them a CI run behind one cannot reach the network.
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+]
+
+/** Build the child environment from the allowlist, skipping unset names. */
+function childEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const name of CHILD_ENV_ALLOWLIST) {
+    const value = process.env[name]
+    if (value !== undefined) env[name] = value
+  }
+  return env
+}
+
+/**
  * Run a command in `cwd`, streaming stdout+stderr into a bounded buffer.
  *
  * Returns the exit code. Timeout and abort both kill the whole process tree.
@@ -439,6 +533,7 @@ async function runCommand(
       detached: !IS_WINDOWS,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      env: childEnv(),
     })
 
     let output = Buffer.alloc(0)
@@ -603,7 +698,7 @@ export function createShellTool(options: ShellToolOptions = {}): Tool<{
     if (timeout !== undefined && timeout > MAX_TIMEOUT_SECONDS) {
       throw new Error(`"timeout" must be at most ${MAX_TIMEOUT_SECONDS} seconds`)
     }
-    const cwd = workdir === undefined ? ctx.root : resolveInsideRoot(workdir, ctx)
+    const cwd = workdir === undefined ? ctx.root : await resolveToolPath(workdir, ctx)
     const timeoutMs = timeout !== undefined ? timeout * 1000 : DEFAULT_TIMEOUT_MS
 
     // Permission chain: persistent deny rules → explicit allow rules → the

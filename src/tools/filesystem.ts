@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Tool, ToolContext } from '../types.ts'
 
@@ -44,10 +44,13 @@ export function applyLineEnding(text: string, eol: LineEnding): string {
 }
 
 /**
- * Resolve a user/model supplied path and refuse to leave the workspace root.
+ * Resolve a model-supplied path and refuse to leave the workspace root.
  *
- * This is the agent's main safety boundary: the model can read and write inside
- * `ctx.root`, never outside it.
+ * This is the lexical half of the boundary and the first gate every filesystem
+ * tool goes through: `..` traversal and absolute paths outside the root are
+ * rejected here. It is pure string work, so it cannot see links — callers must
+ * also go through `resolveToolPath`, which adds the link check. Never call this
+ * directly from a tool.
  */
 export function resolveInsideRoot(target: string, ctx: ToolContext): string {
   if (typeof target !== 'string' || target.trim() === '') {
@@ -59,6 +62,80 @@ export function resolveInsideRoot(target: string, ctx: ToolContext): string {
     throw new Error(`Path "${target}" is outside the workspace root (${ctx.root})`)
   }
   return resolved
+}
+
+/**
+ * Resolve a path and refuse to leave the root through a link either.
+ *
+ * `resolveInsideRoot` compares strings, so a symlink or NTFS junction *inside*
+ * the root that points outside it passes the check and the read or write then
+ * follows the link out: measured, a junction at `<root>/link` made
+ * `read_file link/secret.txt` return a file outside the root. This resolves the
+ * deepest part of the target that exists — so a file about to be created is
+ * checked through its parent — and re-checks the real path against the real
+ * root.
+ *
+ * Every filesystem tool must resolve through this, and the shell tool's
+ * `workdir` too.
+ */
+export async function resolveToolPath(target: string, ctx: ToolContext): Promise<string> {
+  const absolute = resolveInsideRoot(target, ctx)
+  const realRoot = await realRootOrNothing(ctx.root)
+  // A root that does not exist yet cannot contain a link, so there is nothing
+  // to resolve: `write_file` may create it (it makes parents recursively).
+  if (realRoot === undefined) return absolute
+
+  const realTarget = await realpathDeepestExisting(absolute)
+  const relative = path.relative(realRoot, realTarget)
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(
+      `Path "${target}" resolves outside the workspace root through a link (${realTarget})`,
+    )
+  }
+  return absolute
+}
+
+/**
+ * The real path of the root, or `undefined` when the root does not exist.
+ *
+ * Only "missing" is tolerated; any other failure (a permission error, a symlink
+ * loop) propagates, because guessing there would turn an unresolvable root into
+ * an allowed one.
+ */
+async function realRootOrNothing(root: string): Promise<string | undefined> {
+  try {
+    return await realpath(root)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined
+    throw new Error(`Cannot resolve the workspace root "${root}": ${describeError(error)}`)
+  }
+}
+
+/**
+ * `realpath` of the deepest ancestor that exists. A target that does not exist
+ * yet (a file about to be written) is checked through its parent, which is the
+ * directory the write will actually land in.
+ *
+ * Only "does not exist" walks up; anything else (a symlink loop, a permission
+ * error) fails closed, because guessing would turn an unreadable path into an
+ * allowed one.
+ */
+async function realpathDeepestExisting(target: string): Promise<string> {
+  let current = target
+  for (;;) {
+    try {
+      return await realpath(current)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        throw new Error(`Cannot resolve "${target}": ${describeError(error)}`)
+      }
+      const parent = path.dirname(current)
+      if (parent === current) return path.resolve(target)
+      current = parent
+    }
+  }
 }
 
 /** Path shown to the model: relative to the root, POSIX separators. */
@@ -110,7 +187,7 @@ export const readFileTool: Tool<{ path: string; offset?: number; limit?: number 
     additionalProperties: false,
   },
   async execute({ path: target, offset, limit }, ctx) {
-    const absolute = resolveInsideRoot(target, ctx)
+    const absolute = await resolveToolPath(target, ctx)
     let raw: string
     try {
       raw = await readFile(absolute, 'utf8')
@@ -170,7 +247,7 @@ export const writeFileTool: Tool<{ path: string; content: string }> = {
   },
   async execute({ path: target, content }, ctx) {
     if (typeof content !== 'string') throw new Error('"content" must be a string')
-    const absolute = resolveInsideRoot(target, ctx)
+    const absolute = await resolveToolPath(target, ctx)
 
     // An overwrite keeps the line ending the file already had, so rewriting a
     // CRLF file does not turn it into a whole-file diff. New files use LF.
@@ -206,7 +283,7 @@ export const listDirTool: Tool<{ path?: string }> = {
     additionalProperties: false,
   },
   async execute({ path: target = '.' }, ctx) {
-    const absolute = resolveInsideRoot(target, ctx)
+    const absolute = await resolveToolPath(target, ctx)
     let entries
     try {
       entries = await readdir(absolute, { withFileTypes: true })

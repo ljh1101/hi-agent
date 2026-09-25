@@ -15,6 +15,7 @@ import {
   contextUsage,
   findCutPoint,
   projectHistory,
+  projectRequestView,
   resolveCompactionOptions,
   resolveContextOptions,
   serializeForSummary,
@@ -136,17 +137,41 @@ export class Agent {
     }
   }
 
-  /** Clear the conversation, keeping the system prompt(s). */
+  /**
+   * Clear the conversation, keeping the system prompt(s).
+   *
+   * The persistence hook fires: a session that is cleared in memory but left
+   * intact on disk comes back on the next resume, which reads as the clear
+   * silently not working.
+   */
   reset(): void {
     const systemMessages = this.history.filter((message) => message.role === 'system')
     this.history.length = 0
     this.history.push(...systemMessages)
     this.usages.clear()
+    this.persistenceOnReplace?.(this.history)
   }
 
-  /** Current context-size estimate (tokens) for the next request. */
+  /**
+   * Current context-size estimate (tokens) for the next request.
+   *
+   * Deliberately the *ordinary* projection, not the emergency one the request
+   * may fall back to: this number drives compaction and is what the UI reports,
+   * and both should reflect what the conversation actually demands. Measuring
+   * the degraded view here would report "under budget" whenever the emergency
+   * pass squeezed under it, so compaction would stop being attempted and the
+   * destructive projection would quietly become the steady state.
+   */
   estimateContextTokens(): number {
     return contextUsage(projectHistory(this.history, this.contextOptions), this.usages).tokens
+  }
+
+  /**
+   * What the model sees. The projection rules live in `src/context.ts`; this
+   * only supplies the history, the budgets and the usage anchors.
+   */
+  private requestView(): ChatMessage[] {
+    return projectRequestView(this.history, this.contextOptions, this.compactionOptions, this.usages)
   }
 
   /**
@@ -162,7 +187,18 @@ export class Agent {
    */
   async compact(): Promise<boolean> {
     const { keepFrom } = findCutPoint(this.history, this.compactionOptions.keepRecentTokens)
-    const systemMessages = this.history.filter((message) => message.role === 'system')
+    // The user's system prompt(s) survive every compaction; a previous summary
+    // is not one of them — it is replaced by the new one below. Keeping both
+    // apart matters: stacking them left every older summary in the history
+    // forever, so the model saw several stale "Next Steps" at once and the
+    // system prefix grew with every compaction until it could no longer be
+    // compacted away.
+    const systemMessages = this.history.filter(
+      (message) => message.role === 'system' && message.summary !== true,
+    )
+    const previousSummaries = this.history.filter(
+      (message) => message.role === 'system' && message.summary === true,
+    )
     const compacted = this.history.slice(0, keepFrom).filter((message) => message.role !== 'system')
     if (compacted.length === 0) {
       // Nothing eligible to compact: the whole history fits in the keep budget.
@@ -177,6 +213,9 @@ export class Agent {
       const summaryReply = await this.llm.chat(
         [
           ...systemMessages,
+          // The summarizer does see the previous summary, so replacing it
+          // loses nothing: whatever it captured is carried into the new one.
+          ...previousSummaries,
           { role: 'user', content: `${transcript}\n\n---\n\n${SUMMARY_PROMPT}` },
         ],
         [], // no tools: the summarizer must only summarize
@@ -189,7 +228,7 @@ export class Agent {
       this.history.length = 0
       this.history.push(
         ...systemMessages,
-        { role: 'system', content: `Summary of the earlier conversation:\n\n${summary}` },
+        { role: 'system', content: `Summary of the earlier conversation:\n\n${summary}`, summary: true },
         ...kept,
       )
       // Usage anchors refer to old indices; drop them (estimates take over).
@@ -325,7 +364,7 @@ export class Agent {
    * tool results are pruned, while the stored history keeps full fidelity.
    */
   private async askModel(definitions: ToolDefinition[]): Promise<LLMResponse> {
-    const view = projectHistory(this.history, this.contextOptions)
+    const view = this.requestView()
     if (this.stream && this.llm.stream) {
       let content = ''
       const toolCalls: ToolCall[] = []

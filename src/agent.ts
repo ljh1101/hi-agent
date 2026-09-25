@@ -9,7 +9,9 @@ import type {
   ToolCall,
   ToolContext,
   ToolDefinition,
+  UndoResult,
 } from './types.ts'
+import { ChangeJournal } from './changes.ts'
 import { ToolRegistry } from './tools/registry.ts'
 import {
   contextUsage,
@@ -28,6 +30,15 @@ import {
 import { buildDefaultSystemPrompt } from './prompts/system.ts'
 
 export { DEFAULT_SYSTEM_PROMPT, buildDefaultSystemPrompt, buildToolsSection } from './prompts/system.ts'
+
+/** Per-run knobs. */
+export interface RunOptions {
+  /**
+   * Cancel *this* turn (a UI's Ctrl+C) without tearing down the agent. Falls
+   * back to the signal given to the constructor.
+   */
+  signal?: AbortSignal
+}
 
 export interface AgentOptions {
   llm: LLM
@@ -109,6 +120,8 @@ export class Agent {
   /** Provider-reported usage, anchored at the assistant message it produced. */
   private readonly usages = new Map<number, { totalTokens?: number }>()
   private approver: ((request: string, command?: string) => Promise<boolean>) | undefined
+  /** What each turn wrote, so `undoLastTurn()` can put it back. */
+  private readonly journal = new ChangeJournal()
 
   constructor(options: AgentOptions) {
     this.llm = options.llm
@@ -149,6 +162,8 @@ export class Agent {
     this.history.length = 0
     this.history.push(...systemMessages)
     this.usages.clear()
+    // Undo marks index into a history that no longer exists.
+    this.journal.clear()
     this.persistenceOnReplace?.(this.history)
   }
 
@@ -185,7 +200,7 @@ export class Agent {
    * request may then hit the provider's window limit, which is safer than
    * corrupting the conversation).
    */
-  async compact(): Promise<boolean> {
+  async compact(signal: AbortSignal | undefined = this.signal): Promise<boolean> {
     const { keepFrom } = findCutPoint(this.history, this.compactionOptions.keepRecentTokens)
     // The user's system prompt(s) survive every compaction; a previous summary
     // is not one of them — it is replaced by the new one below. Keeping both
@@ -219,7 +234,7 @@ export class Agent {
           { role: 'user', content: `${transcript}\n\n---\n\n${SUMMARY_PROMPT}` },
         ],
         [], // no tools: the summarizer must only summarize
-        { signal: this.signal },
+        { signal },
       )
       const summary = summaryReply.content?.trim()
       if (!summary) return false
@@ -263,6 +278,9 @@ export class Agent {
     this.history.length = 0
     this.history.push(...history)
     this.usages.clear()
+    // A resumed conversation has no journal: the changes it made were recorded
+    // in the process that made them.
+    this.journal.clear()
   }
 
   /** Attach or replace the approval hook for risky tool executions. */
@@ -286,14 +304,22 @@ export class Agent {
    * Run one turn: give the agent an input and let it work until it answers.
    * Never throws for model/tool failures that the model can recover from.
    */
-  async run(input: string): Promise<RunResult> {
+  async run(input: string, options: RunOptions = {}): Promise<RunResult> {
+    // A per-run signal lets a UI cancel *this* turn (Ctrl+C at the prompt)
+    // without tearing down the agent; the constructor's signal still applies as
+    // the default, which is what library users pass once for the whole session.
+    const signal = options.signal ?? this.signal
+
+    // Where an undo of this turn rewinds the conversation to: the message that
+    // was last before the user's request, so the rewind drops the request too.
+    this.journal.beginTurn(this.history.at(-1) ?? null)
     this.append({ role: 'user', content: input })
     const definitions = this.registry.definitions()
 
     let lastContent = ''
     let compactionFailed = false
     for (let step = 1; step <= this.maxSteps; step++) {
-      if (this.signal?.aborted) {
+      if (signal?.aborted) {
         return this.finish(lastContent, step - 1, 'aborted')
       }
       this.emit({ type: 'step', step })
@@ -306,18 +332,18 @@ export class Agent {
         !compactionFailed &&
         shouldCompact(this.estimateContextTokens(), this.compactionOptions)
       ) {
-        const ok = await this.compact()
+        const ok = await this.compact(signal)
         if (!ok) compactionFailed = true
       }
 
       this.emit({ type: 'context_usage', tokens: this.estimateContextTokens() })
 
-      const reply = await this.askModel(definitions)
+      const reply = await this.askModel(definitions, signal)
       lastContent = reply.content ?? ''
       this.emit({ type: 'assistant', content: lastContent, toolCalls: reply.toolCalls })
 
       // The stream may have been aborted mid-reply; treat it as a stop, not a final answer.
-      if (this.signal?.aborted) {
+      if (signal?.aborted) {
         return this.finish(lastContent, step, 'aborted')
       }
 
@@ -340,8 +366,13 @@ export class Agent {
 
       // Run the requested tools. Independent calls could be parallelized here,
       // but sequential execution keeps ordering deterministic for the model.
+      //
+      // Every call gets a result even after an abort, because the history must
+      // stay replayable: an assistant message whose tool_calls have no matching
+      // tool messages is rejected by every provider on the *next* request. An
+      // aborted call therefore reports the abort as its observation.
       for (const call of reply.toolCalls) {
-        const observation = await this.executeTool(call)
+        const observation = await this.executeTool(call, signal)
         this.append({
           role: 'tool',
           content: observation.content,
@@ -357,20 +388,61 @@ export class Agent {
   }
 
   /**
+   * Undo the last turn: put back the files it changed and drop its messages.
+   *
+   * Both halves matter. Restoring the files without the conversation leaves a
+   * model that believes its edits are on disk; dropping the conversation
+   * without the files leaves a session describing code that no longer exists.
+   * Returns `undefined` when there is nothing left to undo.
+   */
+  async undoLastTurn(): Promise<UndoResult | undefined> {
+    const undone = await this.journal.undo(this.root)
+    if (!undone) return undefined
+
+    // Rewind to just after the boundary message. When the boundary is gone the
+    // history was rewritten underneath the turn (compaction summarized it away),
+    // and the pre-turn state no longer exists: the files are still restored, but
+    // the conversation is left alone rather than truncated to a guess.
+    const boundaryIndex = undone.boundary ? this.history.indexOf(undone.boundary) : -1
+    const rewound = undone.boundary === null || boundaryIndex >= 0
+    const keep = undone.boundary === null ? 0 : boundaryIndex + 1
+    const dropped = rewound ? this.history.length - keep : 0
+
+    if (rewound) {
+      this.history.length = keep
+      // Usage anchors point at indices that no longer exist.
+      this.usages.clear()
+      // The conversation on disk has to agree, or the next resume replays the
+      // turn that was just undone.
+      this.persistenceOnReplace?.(this.history)
+    }
+
+    return {
+      restored: undone.restored,
+      removed: undone.removed,
+      droppedMessages: dropped,
+      rewound,
+    }
+  }
+
+  /**
    * Ask the model for one reply. Prefers streaming when the LLM supports it,
    * emitting `token` events as text arrives; otherwise falls back to `chat()`.
    *
    * The model never sees `history` directly: it sees a projection where old
    * tool results are pruned, while the stored history keeps full fidelity.
    */
-  private async askModel(definitions: ToolDefinition[]): Promise<LLMResponse> {
+  private async askModel(
+    definitions: ToolDefinition[],
+    signal: AbortSignal | undefined,
+  ): Promise<LLMResponse> {
     const view = this.requestView()
     if (this.stream && this.llm.stream) {
       let content = ''
       const toolCalls: ToolCall[] = []
       let usage: LLMResponse['usage']
       try {
-        for await (const event of this.llm.stream(view, definitions, { signal: this.signal })) {
+        for await (const event of this.llm.stream(view, definitions, { signal })) {
           if (event.type === 'delta') {
             content += event.delta
             this.emit({ type: 'token', delta: event.delta })
@@ -384,21 +456,24 @@ export class Agent {
       } catch (error) {
         // A mid-stream abort means the run is being cancelled; surface it as an
         // aborted stop instead of a provider exception.
-        if (this.signal?.aborted) {
+        if (signal?.aborted) {
           return { content, toolCalls, usage }
         }
         throw error
       }
       return { content, toolCalls, usage }
     }
-    return this.llm.chat(view, definitions, { signal: this.signal })
+    return this.llm.chat(view, definitions, { signal })
   }
 
   /**
    * Execute one tool call and turn every outcome — including bad JSON, unknown
    * tools, throws and timeouts — into an observation string.
    */
-  private async executeTool(call: ToolCall): Promise<{ content: string; isError: boolean }> {
+  private async executeTool(
+    call: ToolCall,
+    signal: AbortSignal | undefined,
+  ): Promise<{ content: string; isError: boolean }> {
     const startedAt = Date.now()
     let parsedArgs: unknown = {}
 
@@ -426,11 +501,17 @@ export class Agent {
       return this.observeTool(call, 'Error: arguments must be a JSON object.', true, startedAt)
     }
 
+    // Already cancelled before starting: report it instead of launching work.
+    if (signal?.aborted) {
+      return this.observeTool(call, 'Error: the run was cancelled before this call ran.', true, startedAt)
+    }
+
     const ctx: ToolContext = {
       root: this.root,
-      ...(this.signal ? { signal: this.signal } : {}),
+      ...(signal ? { signal } : {}),
       log: (message: string) => this.emit({ type: 'log', message }),
       ...(this.approver ? { approve: this.approver } : {}),
+      recordChange: (change) => this.journal.record(change),
     }
 
     try {

@@ -1,4 +1,5 @@
-﻿export { Agent, type AgentOptions } from './agent.ts'
+﻿export { Agent, type AgentOptions, type RunOptions } from './agent.ts'
+export { ChangeJournal } from './changes.ts'
 export {
   buildDefaultSystemPrompt,
   buildToolsSection,
@@ -74,6 +75,7 @@ export type {
   AgentEvent,
   ChatMessage,
   ChatOptions,
+  FileChange,
   JsonSchema,
   LLM,
   LLMResponse,
@@ -86,4 +88,5 @@ export type {
   ToolContext,
   ToolDefinition,
   ToolResult,
+  UndoResult,
 } from './types.ts'

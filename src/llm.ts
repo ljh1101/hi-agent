@@ -157,7 +157,13 @@ async function* parseSSE(response: Response): AsyncGenerator<WireStreamChunk, vo
       if (!line.startsWith('data:')) continue
       const data = line.slice(5).trimStart()
       if (data === '[DONE]') return
-      yield JSON.parse(data) as WireStreamChunk
+      try {
+        yield JSON.parse(data) as WireStreamChunk
+      } catch {
+        // Same contract as the frames above: a malformed chunk is a provider
+        // error, not a raw SyntaxError escaping as an untyped crash.
+        throw new LLMError('Model returned invalid JSON in stream', response.status, data)
+      }
     }
   }
 }
@@ -202,8 +208,21 @@ export class OpenAICompatibleLLM implements LLM {
     options: ChatOptions = {},
   ): Promise<LLMResponse> {
     const body = this.buildBody(messages, tools)
-    const response = await this.fetchWithRetry(body, options.signal)
-    const text = await response.text()
+    // Non-streaming has no progress to observe until the whole answer is ready,
+    // so the bound has to cover the generation itself: a total timeout, not an
+    // inactivity one.
+    const response = await this.fetchWithRetry(
+      body,
+      combineSignals(options.signal, AbortSignal.timeout(this.timeoutMs)),
+      options.signal,
+    )
+
+    let text: string
+    try {
+      text = await response.text()
+    } catch (error) {
+      throw this.toLLMError(error, options.signal, false)
+    }
 
     let parsed: WireResponse
     try {
@@ -244,38 +263,60 @@ export class OpenAICompatibleLLM implements LLM {
     // Ask the provider to report usage on the final chunk when it supports it.
     body.stream_options = { include_usage: true }
 
-    const response = await this.fetchWithRetry(body, options.signal)
+    // A stream is measured by *silence*, not by total duration: a reasoning
+    // model can legitimately spend minutes producing one answer, and a total
+    // timeout killed it mid-sentence while the connection was perfectly
+    // healthy (measured: a provider trickling a body was cut off at the
+    // configured 300ms). Every chunk therefore pushes the deadline out.
+    const idle = startIdleTimeout(this.timeoutMs)
+    const onExternalAbort = (): void => idle.controller.abort(options.signal?.reason)
+    options.signal?.addEventListener('abort', onExternalAbort, { once: true })
 
     let content = ''
     const toolCalls = new Map<number, { id: string; name: string; arguments: string }>()
     let finishReason: string | null = null
     let usage: LLMResponse['usage']
 
-    for await (const chunk of parseSSE(response)) {
-      const choice = chunk.choices?.[0]
-      const delta = choice?.delta
-      if (delta?.content) {
-        content += delta.content
-        yield { type: 'delta', delta: delta.content }
-      }
-      if (delta?.tool_calls) {
-        for (const raw of delta.tool_calls) {
-          const index = raw.index ?? 0
-          const existing = toolCalls.get(index) ?? { id: `call_${index}`, name: '', arguments: '' }
-          if (raw.id) existing.id = raw.id
-          if (raw.function?.name) existing.name = raw.function.name
-          if (raw.function?.arguments) existing.arguments += raw.function.arguments
-          toolCalls.set(index, existing)
+    try {
+      const response = await this.fetchWithRetry(
+        body,
+        idle.signal,
+        options.signal,
+        () => idle.keepAlive(),
+      )
+
+      for await (const chunk of parseSSE(response)) {
+        idle.keepAlive()
+        const choice = chunk.choices?.[0]
+        const delta = choice?.delta
+        if (delta?.content) {
+          content += delta.content
+          yield { type: 'delta', delta: delta.content }
+        }
+        if (delta?.tool_calls) {
+          for (const raw of delta.tool_calls) {
+            const index = raw.index ?? 0
+            const existing = toolCalls.get(index) ?? { id: `call_${index}`, name: '', arguments: '' }
+            if (raw.id) existing.id = raw.id
+            if (raw.function?.name) existing.name = raw.function.name
+            if (raw.function?.arguments) existing.arguments += raw.function.arguments
+            toolCalls.set(index, existing)
+          }
+        }
+        if (choice?.finish_reason) finishReason = choice.finish_reason
+        if (chunk.usage) {
+          usage = {
+            promptTokens: chunk.usage.prompt_tokens,
+            completionTokens: chunk.usage.completion_tokens,
+            totalTokens: chunk.usage.total_tokens,
+          }
         }
       }
-      if (choice?.finish_reason) finishReason = choice.finish_reason
-      if (chunk.usage) {
-        usage = {
-          promptTokens: chunk.usage.prompt_tokens,
-          completionTokens: chunk.usage.completion_tokens,
-          totalTokens: chunk.usage.total_tokens,
-        }
-      }
+    } catch (error) {
+      throw this.toLLMError(error, options.signal, idle.timedOut())
+    } finally {
+      idle.dispose()
+      options.signal?.removeEventListener('abort', onExternalAbort)
     }
 
     for (const call of toolCalls.values()) {
@@ -306,17 +347,34 @@ export class OpenAICompatibleLLM implements LLM {
     return body
   }
 
-  /** Issue the request, retrying transient failures, and return the response. */
-  private async fetchWithRetry(body: Record<string, unknown>, signal: AbortSignal | undefined): Promise<Response> {
+  /**
+   * Issue the request, retrying transient failures, and return the response.
+   *
+   * `cancel` is the caller's own signal, kept separate from the bound being
+   * enforced: when *it* fires the run is being cancelled and the abort is passed
+   * through untouched, while a timeout we imposed is wrapped as an `LLMError`
+   * like any other transport failure.
+   *
+   * `onAttempt` runs before every try — the streaming path uses it to give each
+   * attempt its own inactivity deadline, so a retry is not measured against the
+   * time the previous attempt already spent.
+   */
+  private async fetchWithRetry(
+    body: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    cancel: AbortSignal | undefined,
+    onAttempt?: () => void,
+  ): Promise<Response> {
     const attempts = this.maxRetries + 1
     let lastError: unknown
     for (let attempt = 0; attempt < attempts; attempt++) {
+      onAttempt?.()
       try {
-        return await this.requestOnce(body, signal)
+        return await this.requestOnce(body, signal, cancel)
       } catch (error) {
         lastError = error
         if (!isRetryable(error) || attempt === attempts - 1) throw error
-        if (signal?.aborted) throw error
+        if (cancel?.aborted || signal?.aborted) throw error
         const retryAfterMs = (error as LLMError).retryAfterMs
         const delay = retryAfterMs ?? backoffDelay(attempt, this.baseDelayMs, this.maxDelayMs)
         await delayOrAbort(delay, signal)
@@ -326,10 +384,37 @@ export class OpenAICompatibleLLM implements LLM {
     throw lastError
   }
 
-  /** Issue a single HTTP request; throws on transport failure and non-2xx. */
-  private async requestOnce(body: Record<string, unknown>, signal: AbortSignal | undefined): Promise<Response> {
-    const requestSignal = combineSignals(signal, AbortSignal.timeout(this.timeoutMs))
+  /**
+   * Give a failure the right type.
+   *
+   * Errors raised while reading the response body are not caught by
+   * `requestOnce`, so they used to escape as bare `DOMException`s: the CLI's
+   * status hints never fired and the message reached the user as
+   * "The operation was aborted due to timeout". An external abort is left
+   * alone — the caller is cancelling the run and checks the signal itself.
+   */
+  private toLLMError(error: unknown, external: AbortSignal | undefined, timedOut: boolean): unknown {
+    if (external?.aborted) return error
+    if (error instanceof LLMError) return error
+    if (timedOut) {
+      return new LLMError(`Model stalled for ${this.timeoutMs}ms with no data; giving up`)
+    }
+    const reason = error instanceof Error ? error.message : String(error)
+    return new LLMError(`Reading the model response failed: ${reason}`)
+  }
 
+  /**
+   * Issue a single HTTP request; throws on transport failure and non-2xx.
+   *
+   * The signal handed in is the only bound on the request, including the body:
+   * callers decide whether that is a total timeout (`chat`) or an inactivity
+   * deadline they push back as data arrives (`stream`).
+   */
+  private async requestOnce(
+    body: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    cancel: AbortSignal | undefined,
+  ): Promise<Response> {
     let response: Response
     try {
       response = await this.fetchImpl(this.endpoint, {
@@ -339,10 +424,12 @@ export class OpenAICompatibleLLM implements LLM {
           authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(body),
-        signal: requestSignal,
+        signal,
       })
     } catch (error) {
-      if (signal?.aborted) throw error
+      // The caller cancelled the run: the agent checks its own signal and turns
+      // this into an aborted stop, so it must not be re-typed here.
+      if (cancel?.aborted) throw error
       const reason = error instanceof Error ? error.message : String(error)
       throw new LLMError(`Request to ${this.endpoint} failed: ${reason}`)
     }
@@ -418,12 +505,61 @@ function delayOrAbort(ms: number, signal: AbortSignal | undefined): Promise<void
   })
 }
 
-/** Combine an external abort signal with a timeout, without leaking listeners. */
-function combineSignals(
-  external: AbortSignal | undefined,
-  timeout: AbortSignal,
-): AbortSignal {
-  if (!external) return timeout
-  const anySignal = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any
-  return typeof anySignal === 'function' ? anySignal([external, timeout]) : external
+/**
+ * An abort signal that fires after `timeoutMs` without a `keepAlive()` call.
+ *
+ * Used for streaming: the deadline is pushed back on every chunk, so it
+ * measures silence rather than total duration. `timedOut` distinguishes "the
+ * model went quiet" from "the user cancelled" when the abort surfaces as an
+ * error, which is the difference between a clear message and a bare
+ * `DOMException`.
+ */
+export interface IdleTimeout {
+  signal: AbortSignal
+  /** The signal the caller aborts to cancel the request (not the timer). */
+  controller: AbortController
+  /** Push the deadline out. Call on every sign of progress. */
+  keepAlive: () => void
+  /** Stop the timer; the signal stops firing. */
+  dispose: () => void
+  /** Whether the deadline has fired. */
+  timedOut: () => boolean
+}
+
+export function startIdleTimeout(ms: number): IdleTimeout {
+  const controller = new AbortController()
+  let timer: NodeJS.Timeout | undefined
+  let fired = false
+
+  const keepAlive = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      fired = true
+      controller.abort(new Error(`idle for ${ms}ms`))
+    }, ms)
+  }
+
+  const idle: IdleTimeout = {
+    signal: controller.signal,
+    controller,
+    keepAlive,
+    dispose: () => {
+      if (timer) clearTimeout(timer)
+    },
+    timedOut: () => fired,
+  }
+  keepAlive()
+  return idle
+}
+
+/**
+ * Combine an external abort signal with a timeout.
+ *
+ * `AbortSignal.any` is required by the engine range in `package.json` (>= 22.18,
+ * where it has existed since 20.3). The previous hand-rolled fallback returned
+ * just the external signal when `any` was missing, silently dropping the
+ * timeout — the only bound on a hung request.
+ */
+function combineSignals(external: AbortSignal | undefined, timeout: AbortSignal): AbortSignal {
+  return external ? AbortSignal.any([external, timeout]) : timeout
 }

@@ -14,11 +14,14 @@ const DEFAULT_SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.next', 'bui
  * - unreadable subdirectories are skipped, not fatal (permission races, deleted dirs)
  * - symlinked directories are not followed, so cycles cannot recurse forever
  * - directories listed in `.gitignore` are pruned (in addition to DEFAULT_SKIP_DIRS)
+ * - an abort stops the walk promptly; the caller turns that into an error rather
+ *   than a silently partial result
  *
  * Returns absolute paths so the caller can resolve them relative to the root.
  */
-async function walk(dir: string, skipDirs: Set<string>): Promise<string[]> {
+async function walk(dir: string, skipDirs: Set<string>, signal?: AbortSignal): Promise<string[]> {
   const out: string[] = []
+  if (signal?.aborted) return out
   let entries
   try {
     entries = await readdir(dir, { withFileTypes: true })
@@ -29,13 +32,22 @@ async function walk(dir: string, skipDirs: Set<string>): Promise<string[]> {
     const absolute = path.join(dir, entry.name)
     if (entry.isDirectory()) {
       if (skipDirs.has(entry.name)) continue
-      out.push(...(await walk(absolute, skipDirs)))
+      out.push(...(await walk(absolute, skipDirs, signal)))
     } else if (entry.isFile()) {
       out.push(absolute)
     }
     // symlinks (isSymbolicLink) are neither file nor dir, so they are ignored.
+    if (signal?.aborted) return out
   }
   return out
+}
+
+/**
+ * Turn a cancelled walk into an observation the model can act on, instead of
+ * handing it a partial file list that looks complete.
+ */
+function throwIfAborted(ctx: ToolContext): void {
+  if (ctx.signal?.aborted) throw new Error('Search aborted.')
 }
 
 /**
@@ -146,10 +158,11 @@ export const globTool: Tool<{ pattern: string; path?: string }> = {
 
     let files: string[]
     try {
-      files = await walk(absolute, skipDirs)
+      files = await walk(absolute, skipDirs, ctx.signal)
     } catch (error) {
       throw new Error(`Cannot search "${target}": ${describeError(error)}`)
     }
+    throwIfAborted(ctx)
 
     const matches = files
       .map((file) => displayPath(file, ctx))
@@ -211,13 +224,15 @@ export const grepTool: Tool<{
 
     let files: string[]
     try {
-      files = await walk(absolute, skipDirs)
+      files = await walk(absolute, skipDirs, ctx.signal)
     } catch (error) {
       throw new Error(`Cannot search "${target}": ${describeError(error)}`)
     }
+    throwIfAborted(ctx)
 
     const results: string[] = []
     for (const file of files) {
+      throwIfAborted(ctx)
       const rel = displayPath(file, ctx)
       if (includeRegex) {
         const subject = includeBasename ? path.basename(rel) : rel

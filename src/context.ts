@@ -50,6 +50,9 @@ const DEFAULTS = {
 /** Marker inserted where content was removed, mirroring dsh's PRUNE_MARKER. */
 const PRUNE_MARKER = (removed: number): string => `\n[... ${removed} characters pruned ...]\n`
 
+/** Marker appended to a transcript line cut short by the total budget. */
+const LINE_TRUNCATED = '\n[... this line truncated to fit the summarization budget ...]'
+
 export interface ResolvedContextOptions {
   pruneThresholdChars: number
   pruneHeadChars: number
@@ -367,9 +370,14 @@ export function findCutPoint(
  * Serialize the messages being compacted away into the transcript the
  * summarizer model reads. Two budgets keep the summarization request itself
  * inside the window: each tool result is capped (`maxToolChars`) and the whole
- * transcript is capped (`maxTotalChars`) by dropping the OLDEST lines first —
- * the tail carries the most recent, most relevant context. A drop marker
- * records what was removed.
+ * transcript is capped (`maxTotalChars`) by keeping the newest lines whole,
+ * truncating the one line that crosses the budget, and dropping the OLDEST
+ * lines — the tail carries the most recent, most relevant context. Markers
+ * record what was removed. Truncating (rather than dropping) the crossing
+ * line guarantees the transcript never empties out: otherwise a single
+ * oversized message — a huge paste as the most recent turn, say — would leave
+ * nothing but the drop marker, and compaction would replace the whole history
+ * with a summary of nothing.
  */
 export function serializeForSummary(
   messages: readonly ChatMessage[],
@@ -399,17 +407,41 @@ export function serializeForSummary(
   let text = lines.join('\n')
   if (text.length <= maxTotalChars) return text
 
-  // Over budget: drop oldest lines until it fits, with a marker up front.
+  // Over budget: keep the newest lines whole; the first line that crosses the
+  // budget is truncated to the room that is left, and everything older is
+  // dropped with a marker up front. `total` counts the separators too, so the
+  // accounting matches the joined text: reaching the over-budget branch with
+  // nothing crossing is impossible, and the headroom below covers both
+  // markers, so the result never exceeds `maxTotalChars`.
+  const budget = maxTotalChars - 150
   const kept: string[] = []
   let total = 0
+  let crossed = lines.length
   for (let index = lines.length - 1; index >= 0; index--) {
     const line = lines[index]!
-    if (total + line.length > maxTotalChars - 100) break
-    kept.unshift(line)
-    total += line.length
+    const cost = line.length + (kept.length > 0 ? 1 : 0)
+    if (total + cost <= budget) {
+      kept.unshift(line)
+      total += cost
+      continue
+    }
+    crossed = index
+    break
   }
-  const dropped = lines.length - kept.length
-  return `[... ${dropped} oldest lines dropped to fit the summarization budget ...]\n${kept.join('\n')}`
+  // The crossing line did not survive whole; its head may still. When it is
+  // the newest line itself — a single oversized paste, say — dropping it
+  // outright would leave nothing but the drop marker, and the summarizer
+  // would be asked to summarize nothing while compaction replaces the whole
+  // history with that vacuous result.
+  if (crossed < lines.length) {
+    const room = budget - total - LINE_TRUNCATED.length
+    if (room > 0) {
+      kept.unshift(`${lines[crossed]!.slice(0, room)}${LINE_TRUNCATED}`)
+    }
+  }
+  const dropped = crossed + 1
+  const dropMarker = `[... ${dropped} oldest lines dropped to fit the summarization budget ...]\n`
+  return `${dropMarker}${kept.join('\n')}`
 }
 
 /** Prompt for the summarization call, asking for a structured checkpoint. */

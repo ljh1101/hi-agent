@@ -170,7 +170,8 @@ export const readFileTool: Tool<{ path: string; offset?: number; limit?: number 
   description:
     'Read a UTF-8 text file and return its contents. Paths are relative to the workspace root. ' +
     'Optionally read a line range: `offset` is the 1-based first line to return, ' +
-    '`limit` is the maximum number of lines. Lines are numbered in the output when a range is given.',
+    '`limit` is the maximum number of lines. Lines are numbered in the output when a range is given. ' +
+    'Files over 200,000 bytes must be read in ranges.',
   promptSnippet: 'read a file, or a line range of a file',
   promptGuidelines: [
     'To explore code: glob/grep first to find candidates, then read_file the promising ones.',
@@ -198,14 +199,16 @@ export const readFileTool: Tool<{ path: string; offset?: number; limit?: number 
     // it would only create text it cannot reproduce.
     const eol = detectLineEnding(raw)
     const content = normalizeLineEndings(raw)
-    if (Buffer.byteLength(content) > MAX_READ_BYTES) {
-      throw new Error(
-        `File "${target}" is larger than ${MAX_READ_BYTES} bytes; read a smaller part instead.`,
-      )
-    }
     if (content === '') return `(${displayPath(absolute, ctx)} is empty)`
 
-    if (offset === undefined && limit === undefined) return content
+    if (offset === undefined && limit === undefined) {
+      if (Buffer.byteLength(content) > MAX_READ_BYTES) {
+        throw new Error(
+          `File "${target}" is larger than ${MAX_READ_BYTES} bytes; read it in parts with "offset" and "limit" (1-based lines), or locate content with grep first.`,
+        )
+      }
+      return content
+    }
 
     const lines = splitLines(content)
     const start = offset === undefined ? 1 : offset
@@ -222,6 +225,15 @@ export const readFileTool: Tool<{ path: string; offset?: number; limit?: number 
 
     const slice = lines.slice(start - 1, Math.min(end, lines.length))
     const numbered = slice.map((line, index) => `${start + index}: ${line}`).join('\n')
+    // The cap bounds what is *returned*, not which files may be read: the
+    // range read is the way out of the full-read error above, so it has to
+    // work on a large file — but an unbounded range would otherwise smuggle
+    // the whole file through as one observation.
+    if (Buffer.byteLength(numbered) > MAX_READ_BYTES) {
+      throw new Error(
+        `Lines ${start}-${Math.min(end, lines.length)} of "${target}" exceed ${MAX_READ_BYTES} bytes; request a smaller "limit".`,
+      )
+    }
     const style = eol === '\r\n' ? ', CRLF' : ''
     const header = `${displayPath(absolute, ctx)} (lines ${start}-${start + slice.length - 1} of ${lines.length}${style})`
     return `${header}\n${numbered}`

@@ -92,10 +92,13 @@ if contextWindow > 0 且 contextUsage(view) > thresholdTokens:
 ### serializeForSummary(messages)
 
 把将被压掉的消息序列化成摘要器读的转写：`[User]:` / `[Assistant]:` /
-`[Assistant tool call]:` / `[Tool result]:` 行；单条工具结果截 2000 字符；
-总转写超 60000 字符时**从最旧开始丢行**（尾部是最近最相关的上下文），头部
-放 `[... N oldest lines dropped ...]` 标记。双预算保证摘要请求自己不撑爆
-窗口。
+`[Assistant tool call]:` / `[Tool result]:` 行；单条工具结果截 2000 字符。
+总转写超 60000 字符时：最新的行整体保留，**跨预算的那一行就地截断**，更旧
+的行丢弃（尾部是最近最相关的上下文）——头部放
+`[... N oldest lines dropped ...]`，被截的行带
+`[... this line truncated ...]`。截断（而非整行丢弃）保证转写永不为空：
+最新一 turn 若是一条超大粘贴，绝不能让摘要输入只剩一行标记，否则压缩会用
+"什么都没有的摘要"替换整个历史。双预算保证摘要请求自己不撑爆窗口。
 
 ### SUMMARY_PROMPT
 

@@ -116,11 +116,17 @@ are kept together). Landing on a tool message keeps moving forward.
 
 Serializes the messages being compacted away into the transcript the
 summarizer reads: `[User]:` / `[Assistant]:` / `[Assistant tool call]:` /
-`[Tool result]:` lines; each tool result capped at 2000 characters; when the
-total exceeds 60000 characters, **the oldest lines are dropped first** (the
-tail carries the most recent, most relevant context), with a
-`[... N oldest lines dropped ...]` marker up front. The double budget keeps
-the summarization request itself inside the window.
+`[Tool result]:` lines; each tool result capped at 2000 characters. When the
+total exceeds 60000 characters, the newest lines are kept whole, **the line
+that crosses the budget is truncated to the room that is left**, and the
+oldest lines are dropped (the tail carries the most recent, most relevant
+context) — marked with `[... N oldest lines dropped ...]` up front and
+`[... this line truncated ...]` on the cut line. Truncating instead of
+dropping the crossing line guarantees the transcript never empties out: a
+single oversized paste as the newest turn must not reduce the summary input
+to the marker alone, or compaction replaces the history with a summary of
+nothing. The double budget keeps the summarization request itself inside
+the window.
 
 ### SUMMARY_PROMPT
 

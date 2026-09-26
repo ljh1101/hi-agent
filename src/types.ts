@@ -176,7 +176,13 @@ export interface Tool<Args = Record<string, unknown>> extends ToolDefinition {
    * can declare a larger budget here.
    */
   timeoutMs?: number
-  /** Risk level. `read` tools run without approval; others may gate on it. */
+  /**
+   * Declarative risk level, for UIs and library consumers to badge or filter
+   * on. The loop never reads it: approval happens only where a tool calls
+   * `ctx.approve` itself (the shell tool's permission chain), and the file
+   * tools deliberately write without asking — the boundary is the workspace
+   * root, not per-file consent (see `src/changes.ts`).
+   */
   permission?: ToolPermission
   /**
    * One-line "what am I for" shown in the system prompt's tools section.

@@ -60,7 +60,9 @@ primary    := number | identifier | '(' expression ')'
 
 ### read_file
 
-- `MAX_READ_BYTES = 200_000`：超限报错并建议读局部，而不是静默截断。
+- `MAX_READ_BYTES = 200_000` 约束的是**返回内容**，不是可读的文件：全量读
+  超限文件会报错并指向 `offset`/`limit`（对任意大小的文件都可用）；区间读
+  的行超过上限则报错要求更小的 `limit`。绝不静默截断。
 - 支持行区间：`offset`（1 起）+ `limit`；区间模式下输出带行号前缀与头行
   `path (lines a-b of N, CRLF?)`。`offset` 越界优雅降级（报总行数而非崩），
   非正整数直接报错。

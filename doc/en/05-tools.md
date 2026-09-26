@@ -68,8 +68,11 @@ Behavior design beyond the path boundary (doc 04):
 
 ### read_file
 
-- `MAX_READ_BYTES = 200_000`: over the limit it errors and suggests reading
-  a smaller part, rather than silently truncating.
+- `MAX_READ_BYTES = 200_000` bounds what the tool **returns**, not which
+  files may be read: a full read of a larger file errors and points at
+  `offset`/`limit` (which work on files of any size); a range read whose
+  lines exceed the cap errors asking for a smaller `limit`. Nothing is
+  silently truncated.
 - Line ranges: `offset` (1-based) + `limit`; range mode numbers the lines
   and emits the header `path (lines a-b of N, CRLF?)`. An out-of-range
   `offset` degrades gracefully (reports the line count instead of throwing);

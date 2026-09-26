@@ -175,3 +175,26 @@ test('read_file rejects a non-positive offset or limit', async () => {
     /positive integer/,
   )
 })
+
+test('read_file reads a line range from a file over the size cap', async () => {
+  // Regression: the size check used to fire before the range logic, so the
+  // "read a smaller part instead" remedy the error suggested could not run.
+  const ctx = await makeRoot()
+  const line = 'z'.repeat(99) + '\n'
+  await writeFileTool.execute({ path: 'big.log', content: line.repeat(2500) }, ctx)
+
+  await assert.rejects(
+    async () => await readFileTool.execute({ path: 'big.log' }, ctx),
+    /larger than 200000 bytes.*offset.*limit/,
+  )
+
+  const range = await readFileTool.execute({ path: 'big.log', offset: 2500, limit: 1 }, ctx)
+  assert.match(range, /lines 2500-2500 of 2500/)
+  assert.match(range, /2500: z{99}/)
+
+  // The returned slice is bounded too: a range covering the whole file errors.
+  await assert.rejects(
+    async () => await readFileTool.execute({ path: 'big.log', offset: 1, limit: 2500 }, ctx),
+    /smaller "limit"/,
+  )
+})

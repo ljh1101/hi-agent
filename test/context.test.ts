@@ -405,6 +405,32 @@ test('serializeForSummary caps the total transcript, dropping oldest lines first
   assert.match(text, /oldest lines dropped/)
 })
 
+test('serializeForSummary truncates a single oversized newest line instead of emptying out', () => {
+  // Regression: the newest line alone over the budget used to drop EVERYTHING,
+  // leaving the marker plus nothing — the summarizer was asked to summarize
+  // nothing and compaction replaced the whole history with that.
+  const messages: ChatMessage[] = [user(`analyze this log: ${'x'.repeat(100_000)}`)]
+  const text = serializeForSummary(messages, 2000, 2_000)
+  assert.ok(text.length > 200, `transcript is ${text.length} chars, effectively empty`)
+  assert.match(text, /\[User\]: analyze this log/)
+  assert.match(text, /truncated to fit/)
+})
+
+test('serializeForSummary truncates the line crossing the budget, keeps newer lines whole', () => {
+  const messages: ChatMessage[] = [
+    user(`old ${'a'.repeat(3000)}`),
+    user(`huge ${'b'.repeat(5000)}`),
+    user('newest question'),
+  ]
+  const text = serializeForSummary(messages, 2000, 2_000)
+  assert.match(text, /newest question/)
+  assert.match(text, /huge b{100,}/, 'the head of the oversized line survives')
+  assert.match(text, /truncated to fit/)
+  assert.match(text, /oldest lines dropped/, 'the oldest line is fully gone')
+  assert.ok(!text.includes('old aaaa'), 'the oldest line was dropped entirely')
+  assert.ok(text.length <= 2_100, `transcript is ${text.length} chars`)
+})
+
 test('serializeForSummary leaves small transcripts untouched', () => {
   const messages: ChatMessage[] = [user('hello'), assistant('hi')]
   assert.equal(serializeForSummary(messages), '[User]: hello\n[Assistant]: hi')

@@ -56,10 +56,13 @@ export interface AgentOptions {
   /** Per-tool execution timeout. Defaults to 30s. */
   toolTimeoutMs?: number
   /**
-   * Approval hook for risky tool executions. When provided, tools with a
-   * `permission` of `write` or `dangerous` call it (via `ToolContext.approve`)
-   * and a `false` result turns into an observation, not a crash. Tools that
-   * never ask (e.g. `read`) run without approval regardless.
+   * Approval hook handed to tools as `ToolContext.approve`. The loop never
+   * calls it on its own: a tool asks when its own logic says so — the shell
+   * tool at the end of its "deny rules → allow rules → read-only whitelist"
+   * chain — and a `false` result turns into an observation, not a crash.
+   * Tools that never ask (read_file, write_file, edit, ...) run without
+   * approval regardless: file writes are bounded by the workspace root, not
+   * per-file consent (see `src/changes.ts`).
    */
   approver?: (request: string, command?: string) => Promise<boolean>
   /**

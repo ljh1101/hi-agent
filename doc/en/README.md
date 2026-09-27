@@ -158,5 +158,7 @@ These four are the project's soul. Read them before changing anything:
   requirements in 09.
 - **Adding a feature**: 05 has the new-tool checklist, 07 explains how
   config plugs in, 09 how to write the tests.
+- **Planning the next feature**: 10 (roadmap — priorities, explicitly
+  rejected items, and the reasoning behind each).
 - **Debugging production**: 06 (session file format and write queues),
   02 (retry and timeout semantics), 08 (CLI behavior and exit codes).

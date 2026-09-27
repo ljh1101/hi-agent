@@ -331,11 +331,25 @@ read tools strip it. So the tools own line endings on the model's behalf.
 
 ## Roadmap
 
-Everything below is an addition on top of the same loop, not a rewrite:
+The full plan — what each item is, why it earns a place, where it lands in
+the source, and what is explicitly rejected — lives in
+[doc/en/10-roadmap.md](doc/en/10-roadmap.md) (中文:
+[doc/zh/10-roadmap.md](doc/zh/10-roadmap.md)). It was derived from a
+feature comparison against DeepSeek Harness and Pi, filtered by one rule:
+an addition on top of the same loop, never a rewrite. In priority order:
 
-- **Parallel tool execution** (the loop runs tool calls sequentially today).
-- **Long-term memory** beyond session files.
-- **Multi-agent**: sub-agents, planners, or an MCP client.
+1. **Parallel tool execution** (the loop runs tool calls sequentially today).
+2. **Web access**: a `web_fetch` tool, then `web_search`.
+3. **Reasoning content, content blocks, native providers** (Anthropic,
+   Google) — staged behind the same `LLM` interface.
+4. **Session fork**, later a branch tree.
+5. **Custom slash commands** from declarative prompt templates.
+6. **Sub-agents**: a read-only `task` tool.
+7. **MCP client** (stdio, zero-dependency).
+
+Then: workspace instruction auto-load, skills, tool-output spill, overflow
+recovery, cost display, todo lists, background shell, and — carried over
+from the old list — long-term memory beyond session files.
 
 Formerly on this list and now shipped: context compaction (auto-triggered
 with a discovered `contextWindow`, or `/compact`), session persistence

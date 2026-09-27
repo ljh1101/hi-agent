@@ -78,8 +78,8 @@ These rules are the project's soul. Do not "optimize" them away:
   `namespace`, parameter properties, or `import =`. Imports use `.ts` extensions.
 - No inline imports (`await import()`, dynamic type imports).
 - **Always ask before removing functionality or code that appears intentional.**
-  Capabilities still on the roadmap (parallel tool execution, long-term memory,
-  sub-agents, MCP) are not gaps to fill silently — propose before adding.
+  Capabilities still on the roadmap (see `doc/en/10-roadmap.md`, mirrored in
+  `doc/zh/10-roadmap.md`) are not gaps to fill silently — propose before adding.
 
 ## Documentation
 

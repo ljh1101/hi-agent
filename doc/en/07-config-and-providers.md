@@ -12,7 +12,7 @@ want to" tension:
 | File | Contents | Permissions | Committed |
 | --- | --- | --- | --- |
 | Global `config.json` | API key, personal defaults, the `webSearch` backend (another secret) | `chmod 0600` after first write | never |
-| Project `<root>/hi-agent.json` | secret-free defaults (baseURL, model, permissions, contextWindow) | normal | shared with the repo |
+| Project `<root>/hi-agent.json` | secret-free defaults (baseURL, model, protocol, permissions, contextWindow) | normal | shared with the repo |
 
 ### Locations
 
@@ -52,6 +52,10 @@ Within the environment, `AGENT_*` outranks `OPENAI_*` / `DEEPSEEK_*`.
     global → DeepSeek/OpenAI default;
   - `contextWindow`: project → global (must be a positive number; undefined =
     auto-compaction disabled). File layers only; no CLI/env passthrough.
+  - `protocol`: override → `AGENT_PROTOCOL` → project → global → **inferred
+    from the base URL's preset** (the native Anthropic/Google endpoints) →
+    `openai`. Selects which adapter `createLLM` builds (doc 02); an unknown
+    value throws at startup.
   - `webSearch`: env (`WEB_SEARCH_PROVIDER` **and** `WEB_SEARCH_API_KEY`,
     both required together) → project → global. A section that is present but
     invalid (unknown provider, empty key) throws at startup; a project
@@ -78,15 +82,17 @@ config).
 
 ### PROVIDERS presets
 
-| id | label | baseURL |
-| --- | --- | --- |
-| openai | OpenAI | `https://api.openai.com/v1` |
-| deepseek | DeepSeek | `https://api.deepseek.com/v1` |
-| moonshot | Moonshot (Kimi) | `https://api.moonshot.cn/v1` |
-| groq | Groq | `https://api.groq.com/openai/v1` |
-| together | Together AI | `https://api.together.xyz/v1` |
-| openrouter | OpenRouter | `https://openrouter.ai/api/v1` |
-| ollama | Ollama (local) | `http://localhost:11434/v1` |
+| id | label | baseURL | protocol |
+| --- | --- | --- | --- |
+| openai | OpenAI | `https://api.openai.com/v1` | openai (default) |
+| anthropic | Anthropic (native API) | `https://api.anthropic.com/v1` | `anthropic` |
+| google | Google Gemini (native API) | `https://generativelanguage.googleapis.com/v1beta` | `google` |
+| deepseek | DeepSeek | `https://api.deepseek.com/v1` | openai (default) |
+| moonshot | Moonshot (Kimi) | `https://api.moonshot.cn/v1` | openai (default) |
+| groq | Groq | `https://api.groq.com/openai/v1` | openai (default) |
+| together | Together AI | `https://api.together.xyz/v1` | openai (default) |
+| openrouter | OpenRouter | `https://openrouter.ai/api/v1` | openai (default) |
+| ollama | Ollama (local) | `http://localhost:11434/v1` | openai (default) |
 
 Presets only solve the baseURL. **The model is deliberately not hard-coded**:
 every OpenAI-compatible endpoint exposes `GET {baseURL}/models`, and setup

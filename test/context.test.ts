@@ -11,6 +11,7 @@ import {
   resolveContextOptions,
   serializeForSummary,
   shouldCompact,
+  textOfContent,
 } from '../src/context.ts'
 import type { ChatMessage } from '../src/types.ts'
 
@@ -67,7 +68,7 @@ test('old oversized tool results are pruned in the projection', () => {
 
   const view = projectHistory(history, opts)
   // Turn 1 (beyond the 3 protected turns) is pruned...
-  assert.match(view[2]!.content ?? '', /characters pruned/)
+  assert.match(textOfContent(view[2]!.content), /characters pruned/)
   // ...the protected turns keep full results.
   assert.equal(view[6]!.content ?? '', big)
   assert.equal(view[10]!.content ?? '', big)
@@ -115,7 +116,7 @@ test('user, assistant and system messages are passed through untouched', () => {
   assert.equal(view[1]!.content, 'turn 1')
   assert.equal(view[2]!.content, 'thinking out loud'.repeat(400))
   // Only the tool message was touched.
-  assert.match(view[3]!.content ?? '', /characters pruned/)
+  assert.match(textOfContent(view[3]!.content), /characters pruned/)
 })
 
 test('tool message identity is preserved after pruning (tool_call_id, name)', () => {
@@ -154,7 +155,7 @@ test('protectedTurns: 0 disables protection entirely', () => {
     assistant('done'),
   )
   const view = projectHistory(history, noProtection)
-  assert.match(view[2]!.content ?? '', /characters pruned/)
+  assert.match(textOfContent(view[2]!.content), /characters pruned/)
 })
 
 test('a single tool result is capped whatever its age', () => {
@@ -169,7 +170,7 @@ test('a single tool result is capped whatever its age', () => {
     tool('c1', 'x'.repeat(20_000)),
   )
   const view = projectHistory(history, capped)
-  const body = view[2]!.content ?? ''
+  const body = textOfContent(view[2]!.content)
   assert.ok(body.length < 1200, `expected the cap to apply, got ${body.length}`)
   assert.match(body, /characters pruned/)
   // Half the budget at each end: the head shows the shape of the output, the
@@ -222,7 +223,7 @@ test('projectRequestView drops the age protection once the budget is blown', () 
 
   // Over the budget: pruning now applies to the newest turn too.
   const tight = projectRequestView(recent, options, { contextWindow: 2_000, thresholdTokens: 1_600 }, noUsages)
-  const body = tight[2]!.content ?? ''
+  const body = textOfContent(tight[2]!.content)
   assert.ok(body.length < 1000, `expected the emergency projection, got ${body.length}`)
   assert.match(body, /characters pruned/)
 })
@@ -240,7 +241,7 @@ test('custom budgets are honoured', () => {
     user('turn 2'),
   )
   const view = projectHistory(history, custom)
-  const pruned = view[1]!.content ?? ''
+  const pruned = textOfContent(view[1]!.content)
   assert.ok(pruned.startsWith('a'.repeat(10)))
   assert.ok(pruned.endsWith('a'.repeat(5)))
   assert.match(pruned, /485 characters pruned/)

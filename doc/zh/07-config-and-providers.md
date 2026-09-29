@@ -11,7 +11,7 @@
 | 文件 | 内容 | 权限 | 是否提交 |
 | --- | --- | --- | --- |
 | 全局 `config.json` | API key、个人默认值、`webSearch` 后端（同样是密钥） | 首次写入后 `chmod 0600` | 绝不 |
-| 项目 `<root>/hi-agent.json` | 无密默认值（baseURL、model、permissions、contextWindow） | 普通文件 | 随仓库共享 |
+| 项目 `<root>/hi-agent.json` | 无密默认值（baseURL、model、protocol、permissions、contextWindow） | 普通文件 | 随仓库共享 |
 
 ### 位置
 
@@ -50,6 +50,9 @@ CLI flags > 环境变量 > 项目 hi-agent.json > 全局 config.json
     global → DeepSeek/OpenAI 默认；
   - `contextWindow`: project → global（须为正数；undefined = 自动压缩
     禁用）。只在文件层提供，CLI/env 不透传它。
+  - `protocol`：override → `AGENT_PROTOCOL` → project → global → **按
+    baseURL 的预设推断**（原生 Anthropic/Google 端点）→ `openai`。决定
+    `createLLM` 构建哪个适配器（02 篇）；取值非法启动即抛。
   - `webSearch`：env（`WEB_SEARCH_PROVIDER` **和** `WEB_SEARCH_API_KEY`，
     必须成对）→ project → global。存在但无效的段（provider 名字不认识、
     key 为空）启动即抛错；project 段整体取代 global 段——不会出现
@@ -71,15 +74,17 @@ cli.ts 的 `loadDotEnv` 调 Node 内置 `process.loadEnvFile('.env')`（可用�
 
 ### PROVIDERS 预设
 
-| id | label | baseURL |
-| --- | --- | --- |
-| openai | OpenAI | `https://api.openai.com/v1` |
-| deepseek | DeepSeek | `https://api.deepseek.com/v1` |
-| moonshot | Moonshot (Kimi) | `https://api.moonshot.cn/v1` |
-| groq | Groq | `https://api.groq.com/openai/v1` |
-| together | Together AI | `https://api.together.xyz/v1` |
-| openrouter | OpenRouter | `https://openrouter.ai/api/v1` |
-| ollama | Ollama (local) | `http://localhost:11434/v1` |
+| id | label | baseURL | protocol |
+| --- | --- | --- | --- |
+| openai | OpenAI | `https://api.openai.com/v1` | openai（默认） |
+| anthropic | Anthropic（原生 API） | `https://api.anthropic.com/v1` | `anthropic` |
+| google | Google Gemini（原生 API） | `https://generativelanguage.googleapis.com/v1beta` | `google` |
+| deepseek | DeepSeek | `https://api.deepseek.com/v1` | openai（默认） |
+| moonshot | Moonshot (Kimi) | `https://api.moonshot.cn/v1` | openai（默认） |
+| groq | Groq | `https://api.groq.com/openai/v1` | openai（默认） |
+| together | Together AI | `https://api.together.xyz/v1` | openai（默认） |
+| openrouter | OpenRouter | `https://openrouter.ai/api/v1` | openai（默认） |
+| ollama | Ollama (local) | `http://localhost:11434/v1` | openai（默认） |
 
 预设只解决 baseURL。**model 刻意不硬编码**：每个 OpenAI 兼容端点都有
 `GET {baseURL}/models`，setup 与 `/model` 查询真实列表让用户挑，

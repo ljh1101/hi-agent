@@ -1,10 +1,31 @@
 # 02 · The LLM Client (llm.ts)
 
-Covers: `src/llm.ts` — **the only file in the project that knows the OpenAI
-wire format**. Swapping providers means editing this one file; the loop,
-tools, and context layer never move. Built on Node 18+'s global `fetch`, zero
-dependencies, compatible with any `/chat/completions` endpoint: OpenAI /
-DeepSeek / Moonshot / Groq / Ollama / vLLM / LM Studio and alike.
+Covers: `src/llm.ts` — the OpenAI-compatible client, the retry/SSE plumbing
+shared by every transport, and `createLLM`, the factory that picks the
+protocol adapter. Swapping providers means editing this one file (plus the
+adapter files it dispatches to); the loop, tools, and context layer never
+move. Built on Node 18+'s global `fetch`, zero dependencies.
+
+Three transports implement the same `LLM` interface (roadmap 3.3):
+
+| File | Protocol | Endpoint style |
+| --- | --- | --- |
+| `llm.ts` (`OpenAICompatibleLLM`) | `openai` (default) | `POST {base}/chat/completions` — OpenAI / DeepSeek / Moonshot / Groq / Ollama / vLLM / LM Studio / ... |
+| `llm-anthropic.ts` (`AnthropicLLM`) | `anthropic` | `POST {base}/messages` — the native Messages API |
+| `llm-google.ts` (`GoogleLLM`) | `google` | `POST {base}/models/{model}:generateContent` (stream: `:streamGenerateContent?alt=sse`) — the native Gemini API |
+
+The protocol is selected by `createLLM({ protocol })`; the resolved config
+supplies it from explicit config or by inferring it from a known base URL
+(doc 07). The adapters reuse `LLMError`, `isRetryable`, `backoffDelay`,
+`parseRetryAfter` and `startIdleTimeout` from `llm.ts`, so retry/backoff and
+timeout semantics are identical across transports.
+
+**Reasoning content (roadmap 3.1).** Reasoning providers stream hidden
+thinking alongside the answer. `chat` maps the `reasoning_content` response
+field to `LLMResponse.reasoning`; `stream` emits `{type:'reasoning', delta}`
+events. The agent stores it on the assistant message, shows it (dimmed) in
+the CLI, and the projection strips it from every later request — reasoning
+providers reject requests that echo it (doc 03).
 
 ## 1. Construction (OpenAICompatibleOptions)
 
@@ -137,8 +158,10 @@ characters).
 
 `toWireMessage`: builds a fresh object containing only provider-recognized
 fields (role/content/tool_calls/tool_call_id) — local markers like
-`summary: true` therefore never go online. `content ?? ''`: null content
-becomes an empty string on the wire.
+`summary: true` and `reasoning` therefore never go online. Content blocks
+(roadmap 3.2) flatten through `textOfContent`: text blocks join (thinking
+and image blocks are agent-local and stay off this transport), and null
+content becomes an empty string.
 
 `toToolCall`: missing `function.name` throws `LLMError`; a missing id is
 synthesized as `call_${index}` (some providers omit ids; without a stable id
@@ -150,6 +173,12 @@ list is non-empty — some local endpoints reject an empty tools array.
 ## 9. Relationship to tests
 
 `fetch` is injectable, and `backoffDelay` / `parseRetryAfter` /
-`startIdleTimeout` are exported; `test/llm.test.ts` covers the wire format,
-retries, timeouts, SSE reassembly, and error classification through
-`serveFakeProvider` (a local HTTP fake, doc 09) — no network, no real keys.
+`startIdleTimeout` / `isRetryable` are exported; `test/llm.test.ts` covers
+the wire format, retries, timeouts, SSE reassembly, and error classification
+through `serveFakeProvider` (a local HTTP fake, doc 09) — no network, no real
+keys. The native adapters get the same treatment in `test/native-llm.test.ts`:
+request shapes (system extraction, `tool_use`/`functionCall` conversions,
+merged tool-result turns), response parsing (thinking/thought parts map to
+`reasoning`), streaming SSE mapping, and the `createLLM` factory dispatch.
+`test/reasoning.test.ts` covers the agent-level reasoning lifecycle and the
+session round-trip of block content.

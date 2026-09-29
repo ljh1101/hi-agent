@@ -18,30 +18,6 @@
 
 ## P1 — 接下来做
 
-### 3. Reasoning content、content block、原生 provider
-
-**问题。** `ChatMessage` 只有纯文本。OpenAI 兼容的推理 provider（包括
-DeepSeek）流式返回的 `reasoning_content` 如今被 `llm.ts` 丢弃；
-Anthropic、Google 原生 API 无法接入；图片没有载体。（pi 把约 35 个
-provider 归一到一套流式事件词表，带显式 thinking 档位；dsh 暴露按
-route 的 reasoning effort。）
-
-**方案。** 分阶段，每一段都独立可用：
-
-1. 把 `reasoning_content` 捕获为 assistant 消息上可选的 `reasoning`
-   字段：CLI 展示、`context.ts` 的投影将其剥离所以绝不回传（推理
-   provider 会拒绝回显它的请求）、不计入 token 估算。
-2. 把 `ChatMessage.content` 升级为 block（text / image / thinking），
-   保持对纯文本兼容的形态。会话文件不变：message 行是 JSON，loader
-   容忍可选字段。`context.ts` 的 `serializeForSummary` 学会拍平 block。
-3. 原生适配器——`llm-anthropic.ts`、`llm-google.ts`——实现 `types.ts`
-   里同一个 `LLM` 接口，由 `providers.ts` 里 provider 预设的
-   `protocol` 字段选择。循环永远不接触 wire 格式；"模型只是接口"
-   （doc README 原则 2）继续成立。
-
-**落点。** `types.ts`、`llm.ts`（+ 新适配器文件）、`context.ts`、
-`cli.ts`、`providers.ts`。
-
 ### 4. 会话 fork（之后是分支树）
 
 **问题。** 会话只能切换，不能分叉：一次走错方向就污染整个文件。
@@ -246,7 +222,15 @@ shell 的只读白名单，要么空转成摆设。某个调用需要用户同�
   `Tool` 带 `concurrency` 提示（默认 `concurrent`，改状态的
   `write_file`/`edit`/`shell` 为 `serial`），observation 按 `tool_calls`
   原序追加，history 保持可回放、日志顺序等于执行顺序（doc 01）。
+- Reasoning content、content block、原生 provider（第 3 项）——分阶段：
+  (3.1) `reasoning_content` 捕获为 agent 本地的 `reasoning` 字段，CLI 展示、
+  投影剥离、token 估算不计；(3.2) `ChatMessage.content` 在文本兼容的字符串
+  之外可携带 `ContentBlock` 数组（text / image / thinking），凡只能放文本的
+  场合由 `textOfContent` 展平；(3.3) 原生适配器 `llm-anthropic.ts` 与
+  `llm-google.ts` 实现同一个 `LLM` 接口，由 provider 预设的 `protocol`
+  字段选择（02 篇）。
 - Web 访问（第 2 项）——先 `web_fetch`：客户端 GET，带超时、下载/内容
   上限、content-type 门禁、最小 HTML 转文本，私网/回环目标走审批
   （05 篇 §9）。再 `web_search`：配置所选 API（Brave / Exa / Perplexity，
-  07 篇）的薄客户端；provider 原生的服务端 web 工具仍推迟到第 3 项。
+  07 篇）的薄客户端；provider 原生的服务端 web 工具仍要等下面的按
+  provider 协议工作进入请求管线本身。

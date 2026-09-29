@@ -341,12 +341,10 @@ the source, and what is explicitly rejected — lives in
 feature comparison against DeepSeek Harness and Pi, filtered by one rule:
 an addition on top of the same loop, never a rewrite. In priority order:
 
-1. **Reasoning content, content blocks, native providers** (Anthropic,
-   Google) — staged behind the same `LLM` interface.
-2. **Session fork**, later a branch tree.
-3. **Custom slash commands** from declarative prompt templates.
-4. **Sub-agents**: a read-only `task` tool.
-5. **MCP client** (stdio, zero-dependency).
+1. **Session fork**, later a branch tree.
+2. **Custom slash commands** from declarative prompt templates.
+3. **Sub-agents**: a read-only `task` tool.
+4. **MCP client** (stdio, zero-dependency).
 
 Then: workspace instruction auto-load, skills, tool-output spill, overflow
 recovery, cost display, todo lists, background shell, and — carried over
@@ -356,9 +354,12 @@ Formerly on this list and now shipped: context compaction (auto-triggered
 with a discovered `contextWindow`, or `/compact`), session persistence
 (`--continue`/`--resume`, `/session`, JSONL files), undo (`/undo`), parallel
 tool execution (batched calls run concurrently; mutating tools stay
-serialized so the undo journal order equals execution order), and web access
+serialized so the undo journal order equals execution order), web access
 (`web_fetch`, plus `web_search` against a configured Brave/Exa/Perplexity
-backend).
+backend), and native providers: reasoning content is captured and displayed
+without ever being echoed back, message content can carry blocks, and
+Anthropic's and Google's native APIs are reachable through dedicated
+adapters behind the same `LLM` interface.
 
 Pick the one your use case needs first; the interfaces in `src/types.ts` are
 small enough that none of them require touching the loop.

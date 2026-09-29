@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { after } from 'node:test'
 import { Agent, DEFAULT_SYSTEM_PROMPT } from '../src/agent.ts'
+import { textOfContent } from '../src/context.ts'
 import { calculatorTool } from '../src/tools/calculator.ts'
 import { editTool } from '../src/tools/edit.ts'
 import { writeFileTool } from '../src/tools/filesystem.ts'
@@ -269,8 +270,8 @@ test('recovers from an unknown tool by reporting it as an observation', async ()
   assert.equal(result.stopReason, 'final')
   assert.equal(result.content, 'Recovered.')
   const observation = agent.history.find((message) => message.role === 'tool')
-  assert.match(observation?.content ?? '', /unknown tool "nope"/)
-  assert.match(observation?.content ?? '', /echo/)
+  assert.match(textOfContent(observation?.content), /unknown tool "nope"/)
+  assert.match(textOfContent(observation?.content), /echo/)
 })
 
 test('recovers from malformed tool arguments', async () => {
@@ -283,7 +284,7 @@ test('recovers from malformed tool arguments', async () => {
 
   assert.equal(result.content, 'Fixed.')
   const observation = agent.history.find((message) => message.role === 'tool')
-  assert.match(observation?.content ?? '', /not valid JSON/)
+  assert.match(textOfContent(observation?.content), /not valid JSON/)
 })
 
 test('turns a throwing tool into an error observation and keeps going', async () => {
@@ -350,7 +351,7 @@ test('seeds an assembled system prompt (identity, tools section, rules)', async 
 
   // One system message now: identity + tools section + rules.
   assert.equal(agent.history.length, 1)
-  const prompt = agent.history[0]!.content ?? ''
+  const prompt = textOfContent(agent.history[0]!.content)
   assert.match(prompt, /You are hi-agent/)
   assert.match(prompt, /# Tools/)
   assert.match(prompt, /- echo\b/)
@@ -382,7 +383,7 @@ test('rejects bad JSON object shapes and non-object arguments', async () => {
   await agent.run('go')
 
   const observation = agent.history.find((message) => message.role === 'tool')
-  assert.match(observation?.content ?? '', /must be a JSON object/)
+  assert.match(textOfContent(observation?.content), /must be a JSON object/)
 })
 
 test('rejects duplicate tool names in the registry', () => {
@@ -521,11 +522,11 @@ test('the model sees pruned tool results while history keeps full fidelity', asy
   // The turn-2 request shows the turn-1 tool result pruned...
   const turnTwoRequest = llm.requests[llm.requests.length - 1]!
   const toolInView = turnTwoRequest.messages.find((m) => m.role === 'tool')
-  assert.match(toolInView?.content ?? '', /characters pruned/)
-  assert.ok((toolInView?.content ?? '').length < 100)
+  assert.match(textOfContent(toolInView?.content), /characters pruned/)
+  assert.ok(textOfContent(toolInView?.content).length < 100)
 
   // ...while the stored history keeps everything.
-  assert.match(agent.history.find((m) => m.role === 'tool')?.content ?? '', /echo: /)
+  assert.match(textOfContent(agent.history.find((m) => m.role === 'tool')?.content), /echo: /)
 })
 
 test('emits context_usage grounded in reported usage once available', async () => {
@@ -586,9 +587,9 @@ test('compact replaces old history with an LLM summary, keeping recent turns', a
   // System prompt + summary + recent tail survive.
   const roles = agent.history.map((m) => m.role)
   assert.equal(roles[0], 'system')
-  const summaryMessage = agent.history.find((m) => m.role === 'system' && /Summary of the earlier conversation/.test(m.content ?? ''))
+  const summaryMessage = agent.history.find((m) => m.role === 'system' && /Summary of the earlier conversation/.test(textOfContent(m.content)))
   assert.ok(summaryMessage, 'summary message present')
-  assert.match(summaryMessage!.content ?? '', /finish the thing/)
+  assert.match(textOfContent(summaryMessage!.content), /finish the thing/)
   // The summary sits before any kept conversation message.
   const firstNonSystem = agent.history.findIndex((m) => m.role !== 'system')
   assert.ok(agent.history.indexOf(summaryMessage!) < firstNonSystem)
@@ -629,7 +630,7 @@ test('repeated compaction replaces the summary instead of stacking it', async ()
     assert.equal(await agent.compact(), true)
     const summaries = agent.history.filter((m) => m.summary === true)
     assert.equal(summaries.length, 1, `round ${round}: exactly one summary`)
-    assert.match(summaries[0]!.content ?? '', new RegExp(`SUMMARY-ROUND-${round}`))
+    assert.match(textOfContent(summaries[0]!.content), new RegExp(`SUMMARY-ROUND-${round}`))
     // The real system prompt survives every round and stays first.
     assert.equal(agent.history[0]!.role, 'system')
     assert.equal(agent.history[0]!.summary, undefined)
@@ -640,7 +641,7 @@ test('repeated compaction replaces the summary instead of stacking it', async ()
   const summaryRequests = llm.requests.filter((request) => request.tools.length === 0)
   assert.equal(summaryRequests.length, 3, 'one summarization call per compaction')
   const transcriptOf = (index: number): string =>
-    summaryRequests[index]!.messages.map((m) => m.content ?? '').join('\n')
+    summaryRequests[index]!.messages.map((m) => textOfContent(m.content)).join('\n')
   assert.match(transcriptOf(1), /SUMMARY-ROUND-1/, 'round 2 saw round 1')
   assert.match(transcriptOf(2), /SUMMARY-ROUND-2/, 'round 3 saw round 2')
 })
@@ -688,7 +689,7 @@ test('when compaction fails, the request is projected down instead of sent as is
   const toolMessage = sent.find((m) => m.role === 'tool')
   assert.ok(toolMessage, 'the tool result is still in the request')
   assert.ok(
-    (toolMessage.content ?? '').length < 1_000,
+    textOfContent(toolMessage.content).length < 1_000,
     `the result must be projected down, got ${toolMessage.content?.length} chars`,
   )
   // The stored history keeps full fidelity; only the request was trimmed.
@@ -741,7 +742,7 @@ test('cancelling mid-turn still leaves every tool call answered', async () => {
     ['call_a', 'call_b'],
     'both calls must be answered',
   )
-  assert.match(results[1]!.content ?? '', /cancelled before this call ran/)
+  assert.match(textOfContent(results[1]!.content), /cancelled before this call ran/)
   assert.equal(llm.requests.length, 1, 'no further model call after the abort')
 })
 
@@ -769,7 +770,7 @@ test('an abort stops work in flight instead of waiting for it', async () => {
     assert.equal(result.stopReason, 'aborted')
     assert.ok(elapsed < 5_000, `the command should be killed, took ${elapsed}ms`)
     assert.equal(llm.requests.length, 1, 'no model call after the abort')
-    assert.match(agent.history.find((m) => m.role === 'tool')?.content ?? '', /aborted/)
+    assert.match(textOfContent(agent.history.find((m) => m.role === 'tool')?.content), /aborted/)
   } finally {
     clearTimeout(timer)
   }
@@ -1013,7 +1014,7 @@ test('auto-compaction triggers when the estimate crosses the threshold', async (
   assert.equal(result.content, 'final')
   assert.ok(events.includes('compaction'), 'compaction event fired')
   const summaryMessage = agent.history.find(
-    (m) => m.role === 'system' && /Summary of the earlier conversation/.test(m.content ?? ''),
+    (m) => m.role === 'system' && /Summary of the earlier conversation/.test(textOfContent(m.content)),
   )
   assert.ok(summaryMessage, 'history contains the compaction summary')
 })

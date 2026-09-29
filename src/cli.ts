@@ -11,7 +11,7 @@ import {
 } from './config.ts'
 import type { HiAgentConfig } from './config.ts'
 import { derivePrefixRule, matchesPrefix, parseRules, type PermissionRules } from './permissions.ts'
-import { LLMError, OpenAICompatibleLLM } from './llm.ts'
+import { createLLM, LLMError, type LLMProtocol } from './llm.ts'
 import { listModels, lookupContextWindow, PROVIDERS } from './providers.ts'
 import { splitSubcommands } from './command-parse.ts'
 import {
@@ -235,6 +235,10 @@ function renderEvent(event: AgentEvent, verbose: boolean): void {
     case 'log':
       console.log(color(DIM, `[log] ${event.message}`))
       break
+    case 'reasoning':
+      // The model's scratch work: shown dimmed in verbose mode only.
+      if (verbose) process.stdout.write(color(DIM, event.delta))
+      break
     case 'token':
       streamed = true
       process.stdout.write(event.delta)
@@ -304,6 +308,7 @@ interface SessionConfig {
   baseURL: string
   apiKey: string
   model: string
+  protocol: LLMProtocol
   root: string
 }
 
@@ -568,7 +573,7 @@ async function switchModel(session: SessionConfig, rl: ReturnType<typeof createI
   }
 
   session.agent.setLLM(
-    new OpenAICompatibleLLM({ apiKey: session.apiKey, baseURL: session.baseURL, model }),
+    createLLM({ apiKey: session.apiKey, baseURL: session.baseURL, model, protocol: session.protocol }),
   )
   session.model = model
   const patch: HiAgentConfig = { model }
@@ -628,6 +633,7 @@ async function setupFirstRun(force = false): Promise<HiAgentConfig | undefined> 
     const choice = (await rl.question('Pick a provider number: ')).trim()
     let baseURL: string
     let suggested: string
+    let provider: (typeof PROVIDERS)[number] | undefined
 
     if (choice === '0') {
       baseURL = (await rl.question('Base URL (include /v1): ')).trim()
@@ -638,7 +644,7 @@ async function setupFirstRun(force = false): Promise<HiAgentConfig | undefined> 
       }
     } else {
       const index = Number(choice)
-      const provider = PROVIDERS[Number.isInteger(index) ? index - 1 : -1]
+      provider = PROVIDERS[Number.isInteger(index) ? index - 1 : -1]
       if (!provider) {
         console.log(color(RED, `Unknown provider "${choice}".`))
         return undefined
@@ -659,7 +665,15 @@ async function setupFirstRun(force = false): Promise<HiAgentConfig | undefined> 
       return undefined
     }
 
-    const saved: HiAgentConfig = { apiKey: key, baseURL, model }
+    // Native-protocol presets carry their wire protocol into the saved config;
+    // custom base URLs are OpenAI-compatible unless resolveConfig infers
+    // otherwise from the URL.
+    const saved: HiAgentConfig = {
+      apiKey: key,
+      baseURL,
+      model,
+      ...(choice !== '0' && provider?.protocol ? { protocol: provider.protocol } : {}),
+    }
     // Best-effort: discover the context window from models.dev so
     // auto-compaction is armed from the very first session.
     const window = await lookupContextWindow(model)
@@ -783,10 +797,11 @@ async function main(): Promise<void> {
   }
 
   const agent = new Agent({
-    llm: new OpenAICompatibleLLM({
+    llm: createLLM({
       apiKey: config.apiKey,
       baseURL: config.baseURL,
       model: config.model,
+      protocol: config.protocol,
     }),
     tools: createDefaultTools({ rules, webSearch: config.webSearch }),
     root,
@@ -843,6 +858,7 @@ async function main(): Promise<void> {
     baseURL: config.baseURL,
     apiKey: config.apiKey,
     model: config.model,
+    protocol: config.protocol,
     root,
     yes: options.yes,
     // A resumed session keeps appending to its original file.

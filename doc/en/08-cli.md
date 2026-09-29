@@ -33,7 +33,7 @@ loadDotEnv → parseArgs
 | `--resume <id>` | resume by id (exact, then prefix match, case-insensitive) |
 | `--yes` | auto-approve everything (trusted containers/CI only) |
 | `-s/--stream`, `--no-stream` | streaming toggle (default on) |
-| `-v/--verbose` | model narration, full tool output, step/context lines |
+| `-v/--verbose` | model narration, full tool output, step/context lines, live reasoning (dimmed) |
 | `-h/--help` | help |
 
 ## 3. setupFirstRun (the first-run wizard)
@@ -129,6 +129,7 @@ Allow? [y]es / [a]lways this session / [n]o:
 | tool_call | `-> name(args first line, 120 chars)` (cyan arrow) | same |
 | tool_result | `ok/!! first line (duration)` | `ok/!! full text (duration)` |
 | token | written verbatim to stdout | same |
+| reasoning | hidden | written verbatim, dimmed (the model's scratch work) |
 | final | newline terminator | same |
 | max_steps | red notice | same |
 

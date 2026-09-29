@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
 import { Agent } from '../src/agent.ts'
+import { textOfContent } from '../src/context.ts'
 import { LLMError, OpenAICompatibleLLM } from '../src/llm.ts'
 import { createDefaultTools } from '../src/tools/index.ts'
 import type { AgentEvent } from '../src/types.ts'
@@ -98,7 +99,7 @@ test('multi-step run: tool call, observation, second tool call, final answer', a
           ['system', 'user', 'assistant', 'tool', 'assistant', 'tool', 'assistant'],
         )
         // The system prompt carries the tools section built from snippets.
-        assert.match(agent.history[0]!.content ?? '', /# Tools/)
+        assert.match(textOfContent(agent.history[0]!.content), /# Tools/)
       },
     )
   } finally {

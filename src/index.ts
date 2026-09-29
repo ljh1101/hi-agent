@@ -17,6 +17,7 @@ export {
   serializeForSummary,
   shouldCompact,
   SUMMARY_PROMPT,
+  textOfContent,
   truncateMiddle,
   type CompactionOptions,
   type ContextOptions,
@@ -38,7 +39,9 @@ export {
   type ResolvedConfig,
   type WebSearchBackend,
 } from './config.ts'
-export { LLMError, OpenAICompatibleLLM, type OpenAICompatibleOptions } from './llm.ts'
+export { LLMError, OpenAICompatibleLLM, createLLM, type CreateLLMOptions, type LLMProtocol, type OpenAICompatibleOptions } from './llm.ts'
+export { AnthropicLLM, type AnthropicOptions } from './llm-anthropic.ts'
+export { GoogleLLM, type GoogleOptions } from './llm-google.ts'
 export {
   appendCompaction,
   appendMessage,
@@ -77,6 +80,7 @@ export type {
   AgentEvent,
   ChatMessage,
   ChatOptions,
+  ContentBlock,
   FileChange,
   JsonSchema,
   LLM,

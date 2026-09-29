@@ -1,6 +1,12 @@
 ﻿export { Agent, type AgentOptions, type RunOptions } from './agent.ts'
 export { ChangeJournal } from './changes.ts'
 export {
+  expandCommandTemplate,
+  findCustomCommand,
+  loadCustomCommands,
+  type CustomCommand,
+} from './commands.ts'
+export {
   buildDefaultSystemPrompt,
   buildToolsSection,
   DEFAULT_SYSTEM_PROMPT,

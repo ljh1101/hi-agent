@@ -11,6 +11,7 @@ import {
 } from './config.ts'
 import type { HiAgentConfig } from './config.ts'
 import { derivePrefixRule, matchesPrefix, parseRules, type PermissionRules } from './permissions.ts'
+import { findCustomCommand, expandCommandTemplate, loadCustomCommands, type CustomCommand } from './commands.ts'
 import { createLLM, LLMError, type LLMProtocol } from './llm.ts'
 import { listModels, lookupContextWindow, PROVIDERS } from './providers.ts'
 import { splitSubcommands } from './command-parse.ts'
@@ -81,6 +82,10 @@ In-session commands: /reset clears history, /model switches model (or /model <id
 copies the conversation up to turn n into a new session and continues there,
 /undo puts back what the last turn changed, exit or quit leaves. Ctrl+C cancels
 the turn in flight; twice (or at the prompt) quits.
+
+Custom commands: drop a markdown template into .hi-agent/commands/<name>.md
+(or <configDir>/commands/ for global ones) and use /name args — $ARGUMENTS in
+the template is replaced with what you typed. Built-in commands take precedence.
 
 Examples:
   hi-agent "What time is it, and what is 23 * 17?"
@@ -326,8 +331,11 @@ interface SessionStore {
   on: boolean
 }
 
-async function repl(session: SessionConfig & { yes?: boolean; store?: SessionStore }): Promise<void> {
+async function repl(
+  session: SessionConfig & { yes?: boolean; store?: SessionStore; customCommands?: CustomCommand[] },
+): Promise<void> {
   const { agent, verbose } = session
+  const customCommands = session.customCommands ?? []
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   if (!session.yes) {
     agent.setApprover(makeApprover(rl, { remembered: new Set<string>() }))
@@ -392,6 +400,28 @@ async function repl(session: SessionConfig & { yes?: boolean; store?: SessionSto
   console.log(
     'hi-agent interactive mode. Commands: /reset, /model, /session, /fork [n], /compact, /undo, exit. Ctrl+C interrupts a turn (twice to quit).',
   )
+  if (customCommands.length > 0) {
+    console.log(
+      color(DIM, `Custom commands: ${customCommands.map((command) => `/${command.name}`).join(', ')}`),
+    )
+  }
+  // One turn of work, shared by plain prompts and expanded custom commands.
+  const runTurn = async (text: string): Promise<void> => {
+    try {
+      await ensureSession()
+      inFlight = new AbortController()
+      const result = await agent.run(text, { signal: inFlight.signal })
+      if (result.stopReason === 'aborted') {
+        console.log(color(DIM, '(turn cancelled; the conversation keeps what it did so far — /undo puts the files back)'))
+      } else if (result.stopReason !== 'final') {
+        console.log()
+      }
+    } catch (error) {
+      printError(error)
+    } finally {
+      inFlight = undefined
+    }
+  }
   try {
     for (;;) {
       let line: string
@@ -459,20 +489,15 @@ async function repl(session: SessionConfig & { yes?: boolean; store?: SessionSto
         }
         continue
       }
-      try {
-        await ensureSession()
-        inFlight = new AbortController()
-        const result = await agent.run(input, { signal: inFlight.signal })
-        if (result.stopReason === 'aborted') {
-          console.log(color(DIM, '(turn cancelled; the conversation keeps what it did so far — /undo puts the files back)'))
-        } else if (result.stopReason !== 'final') {
-          console.log()
-        }
-      } catch (error) {
-        printError(error)
-      } finally {
-        inFlight = undefined
+      // Custom slash commands (declarative templates): the built-ins handled
+      // above kept precedence. An unknown slash input still reaches the model
+      // as ordinary text, as before.
+      const matched = findCustomCommand(customCommands, input)
+      if (matched) {
+        await runTurn(expandCommandTemplate(matched.command.body, matched.args))
+        continue
       }
+      await runTurn(input)
     }
   } finally {
     rl.close()
@@ -775,6 +800,10 @@ async function main(): Promise<void> {
 
   const verbose = options.verbose
 
+  // Custom slash commands: `.hi-agent/commands/*.md` in the workspace plus
+  // `<configDir>/commands/*.md` globally; built-in commands keep precedence.
+  const customCommands = await loadCustomCommands(root, globalConfigDir())
+
   // Merge persistent permission rules: project config wins over global config.
   let rules: PermissionRules = { allow: [], deny: [] }
   try {
@@ -894,6 +923,7 @@ async function main(): Promise<void> {
     protocol: config.protocol,
     root,
     yes: options.yes,
+    customCommands,
     // A resumed session keeps appending to its original file.
     store: resumeSessionId
       ? { id: resumeSessionId, createdAt: undefined, on: true }

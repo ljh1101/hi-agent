@@ -38,7 +38,7 @@ ScriptedLLM does not implement `stream`, so it naturally covers the
 "no-streaming falls back to chat" path; StreamingLLM's `chat` throws,
 preventing accidental wrong-branch execution.
 
-## 3. Suite map (17 files, ~270 cases)
+## 3. Suite map (18 files, ~280 cases)
 
 | File | Cases | Coverage |
 | --- | --- | --- |
@@ -49,6 +49,7 @@ preventing accidental wrong-branch execution.
 | `agent.test.ts` | 40 | Full loop semantics: observations fed back, unknown tool/bad JSON/throwing recovery, maxSteps, event order, system prompt assembly, streaming tokens/tool collection/mid-stream abort, approver injection and denial-as-observation, projection vs history fidelity, usage anchoring, compaction (replacement not stacking/failure untouched/emergency projection), cancellation (per-run signal, cancelled calls still answered), undo (byte-exact restore including line endings, removing created files) |
 | `llm.test.ts` | 26 | Wire format, history serialization, id synthesis, error classification (error payload/bad JSON/no choices), total timeout, retries (429/5xx/no retry on 401/Retry-After/backoff bounds/interruptible backoff), idle timeout (slow stream survives, silence fails), SSE reassembly, usage |
 | `context.test.ts` | 24 | Pruning rules (head+tail+marker, short results untouched, **history never modified**, passthrough, identity preserved), the protection window, ceiling-vs-age order, the emergency projection, chars/4, usage anchors, ratio thresholds, cut points (never splitting call/result), summary transcript (per-tool cap/oldest-dropped) |
+| `commands.test.ts` | 7 | Custom slash commands: two-directory loading with project-over-global precedence, missing directories, junk skipped, every `$ARGUMENTS` replaced, arguments stay data (`$&` not re-interpreted), append-when-no-placeholder, `/name args` splitting, unknown-input rejection |
 | `config.test.ts` | 17 | Layering precedence, DeepSeek trigger conditions, bad config throws, 0600, provider presets, listModels, window lookup (exact match/failures swallowed) |
 | `search.test.ts` | 16 | Glob syntax, grep line formats/include/binary skip/context, root boundary, .gitignore, symlinks not followed, a directory vanishing mid-walk |
 | `tools.test.ts` | 11 | Read/write round-trip, list_dir, boundary refusal (including **in-root link escape**), empty file/dir placeholders, line ranges and validation |

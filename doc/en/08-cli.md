@@ -118,7 +118,34 @@ Allow? [y]es / [a]lways this session / [n]o:
   to the set.
 - `y`/`yes` approves once; anything else denies.
 
-## 7. Event rendering renderEvent
+## 7. Custom slash commands (commands.ts) — roadmap item 5
+
+Slash commands used to be hard-coded; reusable prompts now live as
+**declarative data**, not code (design principle 3 survives — a template can
+only become a user message, never a new behavior):
+
+| Location | Scope |
+| --- | --- |
+| `<root>/.hi-agent/commands/<name>.md` | project, travels with the repo |
+| `<configDir>/commands/<name>.md` | global, personal |
+
+- The file body is the prompt template; `$ARGUMENTS` is replaced with what
+  the user typed after `/name`. Split/join, not `replace` — arguments
+  containing `$&` must stay data. With no placeholder in the template, the
+  arguments are appended as their own paragraph, so typing them is never
+  silently swallowed.
+- Precedence: built-ins first (the REPL dispatches `/reset`, `/model`,
+  `/session`, `/fork`, `/compact`, `/undo` before templates are consulted),
+  then project overrides global on a name clash.
+- Only `*.md` files with plain stems (`a-z0-9_-`) load; missing directories
+  and unreadable files are skipped, never fatal. Unknown `/foo` input still
+  reaches the model as ordinary text, exactly as before.
+- Startup prints the loaded command names (dim) for discoverability;
+  expansion and dispatch live in `src/commands.ts`
+  (`loadCustomCommands` / `findCustomCommand` / `expandCommandTemplate`),
+  tested in `test/commands.test.ts`.
+
+## 8. Event rendering renderEvent
 
 | Event | non-verbose | verbose |
 | --- | --- | --- |
@@ -138,14 +165,14 @@ a newline instead of reprinting the whole answer; without streaming, final
 prints the full content. Colors go through `color()` and are stripped on
 non-TTY.
 
-## 8. Error presentation printError
+## 9. Error presentation printError
 
 `LLMError` gets a hint by status: 401/403 → the key was rejected, check
 `AGENT_API_KEY`; 404 → check the `AGENT_BASE_URL` version segment and
 `AGENT_MODEL`; 429 → rate limited, retry shortly. Anything else prints the
 message verbatim.
 
-## 9. Exit codes
+## 10. Exit codes
 
 | Case | exitCode |
 | --- | --- |

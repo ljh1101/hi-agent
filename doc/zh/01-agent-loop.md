@@ -62,7 +62,7 @@ interface LLM {
 interface Tool<Args> extends ToolDefinition {
   execute(args: Args, ctx: ToolContext): Promise<ToolResult> | ToolResult
   timeoutMs?: number          // 覆盖 agent 默认 30s（shell 用它声明更长预算）
-  permission?: ToolPermission // 'read' | 'write' | 'dangerous'
+  concurrency?: 'serial' | 'concurrent' // 批内调度；默认 concurrent（01 篇 §2）
   promptSnippet?: string      // 一行"我是干嘛的"，进系统提示词工具段
   promptGuidelines?: readonly string[]  // 行为规则，合并进系统提示词
 }
@@ -86,14 +86,16 @@ interface Tool<Args> extends ToolDefinition {
 `after: null` = 工具删了它。`UndoResult.rewound: false` 表示对话没能回卷
 （该 turn 期间被压缩过，压缩前的状态已不存在），只还原了文件。
 
-### ToolPermission 的现状（重要）
+### 审批存在于哪里（重要）
 
-`permission` 字段目前是**声明性元数据**，agent 循环不读取它。实际审批由
-工具自己完成：shell 工具（`permission: 'dangerous'`）在自己的 `execute`
-里走"deny 规则 → allow 规则 → 只读白名单 → `ctx.approve`"链（详见 04 篇）；
-文件写工具（`edit` 标 `'write'`）**不经审批直接写**——这是设计决定：边界
-是工作区根，不是逐文件的用户同意，退路是 `/undo`（06 篇）。新增危险工具时
-应在自身 `execute` 里调用 `ctx.approve`，并按 AGENTS.md 要求评审权限等级。
+`Tool` 上没有静态风险字段：旧的 `permission` 徽标是没人读取的声明性
+元数据，而本代码库里每道真实门禁都是按调用的，所以字段被删除了。实际
+审批由工具自己完成：shell 工具在自己的 `execute` 里走"deny 规则 →
+allow 规则 → 只读白名单 → `ctx.approve`"链（详见 04 篇）；文件写工具
+**不经审批直接写**——这是设计决定：边界是工作区根，不是逐文件的用户
+同意，退路是 `/undo`（06 篇）。新增危险工具时应在自身 `execute` 里调用
+`ctx.approve`，把按调用检查的依据（命令、URL、加白清单）写在旁边，并按
+AGENTS.md 要求评审其审批行为。
 
 ### AgentEvent（10 种）
 

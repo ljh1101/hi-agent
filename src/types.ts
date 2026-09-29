@@ -158,9 +158,6 @@ export interface UndoResult {
   rewound: boolean
 }
 
-/** Risk level of a tool, driving the approval gate. */
-export type ToolPermission = 'read' | 'write' | 'dangerous'
-
 /** A tool returns text; an observation is always text from the model's view. */
 export type ToolResult = string
 
@@ -176,14 +173,6 @@ export interface Tool<Args = Record<string, unknown>> extends ToolDefinition {
    * can declare a larger budget here.
    */
   timeoutMs?: number
-  /**
-   * Declarative risk level, for UIs and library consumers to badge or filter
-   * on. The loop never reads it: approval happens only where a tool calls
-   * `ctx.approve` itself (the shell tool's permission chain), and the file
-   * tools deliberately write without asking — the boundary is the workspace
-   * root, not per-file consent (see `src/changes.ts`).
-   */
-  permission?: ToolPermission
   /**
    * How calls of this tool within one batch of `tool_calls` are scheduled.
    *

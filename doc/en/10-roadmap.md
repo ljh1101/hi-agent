@@ -58,8 +58,8 @@ tools work against every endpoint.
 **Lands in.** `src/tools/web.ts` (new), `config.ts` (search backend key),
 `prompts/system.ts` (tool snippets).
 
-**Guardrails.** Doc 05's new-tool checklist applies; `permission` must be
-reviewed like any side effect (see the maintenance decision below).
+**Guardrails.** Doc 05's new-tool checklist applies; the approval behavior
+must be reviewed like any side effect (see the maintenance decision below).
 
 ### 3. Reasoning content, content blocks, native providers
 
@@ -279,15 +279,20 @@ Memory beyond session files. Realistic shape after item 7: an MCP memory
 server, or a bounded workspace memory file that a `memory_write` tool
 maintains and the system prompt loads. Do not build a vector store.
 
-## A maintenance decision, not a feature
+## A maintenance decision, made
 
-**`Tool.permission` is declarative today, and nothing reads it.** The loop
-never consults the field; `write_file` and `edit` run without approval
-(their boundary is the workspace root plus `/undo`). Decide before adding
-the side-effecting tools from items 2, 6, 7 and 14: either wire
-`permission` into a real approval waterfall (deny rules → allow rules →
-per-tool policy → approver, mirroring the shell chain), or drop the
-field. Carrying a dead security-looking field is the worst option.
+**`Tool.permission` was declarative, and nothing read it** — the loop never
+consulted the field; `write_file` and `edit` ran without approval (their
+boundary is the workspace root plus `/undo`). Decided before the
+side-effecting tools of items 2, 6, 7 and 14 landed: **the field is
+dropped.** Every real gate in this codebase is per-call — the shell command
+(read-only whitelist + rules), the fetched URL (web_fetch, private
+addresses), the config allow-list (MCP tools) — so a static per-tool enum
+could not drive any of them: wired into the waterfall it would either break
+the shell's read-only whitelist or reduce to a no-op. Where a call needs
+consent, the tool calls `ctx.approve` inside `execute`, with the per-call
+check stated next to it. A tool whose risk could be decided per tool rather
+than per call would be the wrong shape.
 
 ## Explicitly out of scope
 

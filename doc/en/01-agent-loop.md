@@ -69,7 +69,7 @@ back to `chat` automatically.
 interface Tool<Args> extends ToolDefinition {
   execute(args: Args, ctx: ToolContext): Promise<ToolResult> | ToolResult
   timeoutMs?: number          // overrides the agent's default 30s (shell declares a longer budget)
-  permission?: ToolPermission // 'read' | 'write' | 'dangerous'
+  concurrency?: 'serial' | 'concurrent' // batch scheduling; default concurrent (doc 01 §2)
   promptSnippet?: string      // one-line "what am I for", into the prompt's tools section
   promptGuidelines?: readonly string[]  // behavior rules, merged into the system prompt
 }
@@ -96,17 +96,18 @@ itself.
 turn was compacted midway; the pre-compaction state no longer exists) and
 only the files were restored.
 
-### Current status of ToolPermission (important)
+### Where approval lives (important)
 
-The `permission` field is currently **declarative metadata; the agent loop
-does not read it**. Enforcement lives inside the tools: the shell tool
-(`permission: 'dangerous'`) walks the "deny rules → allow rules → read-only
-whitelist → `ctx.approve`" chain inside its own `execute` (doc 04); file
-writing tools (`edit` declares `'write'`) **write without approval** — a
-deliberate decision: the boundary is the workspace root, not per-file user
-consent, and the escape hatch is `/undo` (doc 06). A new risky tool should
-call `ctx.approve` in its own `execute` and have its permission level
-reviewed per AGENTS.md.
+There is no static risk field on `Tool`: the old `permission` badge was
+declarative metadata nothing read, and every real gate in this codebase is
+per-call, so it was dropped. Enforcement lives inside the tools: the shell
+tool walks the "deny rules → allow rules → read-only whitelist →
+`ctx.approve`" chain inside its own `execute` (doc 04); file writing tools
+**write without approval** — a deliberate decision: the boundary is the
+workspace root, not per-file user consent, and the escape hatch is `/undo`
+(doc 06). A new risky tool calls `ctx.approve` in its own `execute`, with
+the per-call check (command, URL, allow-list) stated next to it, and has
+its approval behavior reviewed per AGENTS.md.
 
 ### AgentEvent (10 kinds)
 

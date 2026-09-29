@@ -4,14 +4,20 @@
 `time.ts`、`filesystem.ts`、`edit.ts`、`search.ts`、`shell.ts`。
 
 工具是普通对象：name + description + JSON Schema + `execute`（+ 可选
-`timeoutMs` / `permission` / `concurrency` / `promptSnippet` /
-`promptGuidelines`）。没有插件系统。路径边界机制见 04 篇 §1，shell 的
-权限链见 04 篇 §4——本篇讲各工具自身的行为设计。
+`timeoutMs` / `concurrency` / `promptSnippet` / `promptGuidelines`）。没有
+插件系统。路径边界机制见 04 篇 §1，shell 的权限链见 04 篇 §4——本篇讲
+各工具自身的行为设计。
 
 `concurrency` 决定一批 `tool_calls` 里的调度方式（见 01 篇）：`concurrent`
 （默认）与批内其他调用并发；`serial` 按 `tool_calls` 原序逐个执行。改状态
 的工具都是 `serial`——`write_file`、`edit`、`shell`——因为 undo 日志按执行
 顺序记录（06 篇）。
+
+审批行为存在于**每个工具内部**，而不是某个字段上：旧的 `Tool.permission`
+徽标（read/write/dangerous）是循环从不读取的声明性元数据，而本代码库里
+每一道真实的门禁都是按调用的（shell 看命令、web_fetch 看 URL、MCP 看
+加白清单），所以字段被删除了。某个调用需要用户同意时，工具在 `execute`
+里调 `ctx.approve`。
 
 ## 1. 注册表与默认工具集
 
@@ -22,17 +28,17 @@
 `createDefaultTools({ rules })` 返回 9 个工具；`rules` 是来自项目/全局
 配置的持久权限规则，只喂给 shell 工具：
 
-| 工具 | 权限等级 | 默认超时 | 一句话 |
+| 工具 | 审批 | 默认超时 | 一句话 |
 | --- | --- | --- | --- |
-| `calculator` | read | 30s | 精确算术（递归下降解析器，无 eval） |
-| `current_time` | read | 30s | 当前 UTC + 本地时间 |
-| `list_dir` | read | 30s | 目录清单（[dir]/[file] + 大小） |
-| `read_file` | read | 30s | 读文本文件或行区间 |
-| `write_file` | write | 30s | 创建/整体覆盖文件（免审批，退路 /undo） |
-| `edit` | write（声明性） | 30s | 唯一串精确替换（免审批，退路 /undo） |
-| `glob` | read | 30s | 按路径模式找文件 |
-| `grep` | read | 30s | 按正则搜内容 |
-| `shell` | dangerous | 305s（工具自带） | 执行 shell 命令（权限链 + 进程树管理） |
+| `calculator` | 无 | 30s | 精确算术（递归下降解析器，无 eval） |
+| `current_time` | 无 | 30s | 当前 UTC + 本地时间 |
+| `list_dir` | 无 | 30s | 目录清单（[dir]/[file] + 大小） |
+| `read_file` | 无 | 30s | 读文本文件或行区间 |
+| `write_file` | 无（以根目录 + `/undo` 为界） | 30s | 创建/整体覆盖文件 |
+| `edit` | 无（以根目录 + `/undo` 为界） | 30s | 唯一串精确替换 |
+| `glob` | 无 | 30s | 按路径模式找文件 |
+| `grep` | 无 | 30s | 按正则搜内容 |
+| `shell` | deny → allow → 只读白名单 → approver | 305s（工具自带） | 执行 shell 命令（权限链 + 进程树管理） |
 
 ## 2. calculator（calculator.ts）
 
@@ -170,9 +176,11 @@ stat 失败则省略，不整体失败）。空目录占位。
 
 ## 9. 新增工具检查单（AGENTS.md 硬性要求）
 
-1. **权限评审**：有副作用的工具加入 `createDefaultTools()` 前先定权限
-   等级；需要审批的在 `execute` 里调 `ctx.approve`（`permission` 字段
-   目前是声明性元数据，循环不读，实际门禁在工具内，见 01 篇 §1）。
+1. **审批评审**：有副作用的工具加入 `createDefaultTools()` 前先评审它的
+   审批行为；某个调用需要用户同意时，`execute` 里按调用逐次检查并调
+   `ctx.approve`（shell 看命令、web_fetch 看 URL、MCP 看加白清单）——
+   没有静态风险字段；一个"按工具而非按调用"决定风险的工具本身就是
+   形状不对。
 2. **写文件必须 `ctx.recordChange`**，携带被替换内容——不参与的写入方
    使自己的变更不可 undo。
 3. **碰文件系统必须 `resolveToolPath`**（禁止直接 `resolveInsideRoot`，

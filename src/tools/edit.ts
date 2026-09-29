@@ -38,7 +38,6 @@ export const editTool: Tool<{ path: string; old_string: string; new_string: stri
     required: ['path', 'old_string', 'new_string'],
     additionalProperties: false,
   },
-  permission: 'write',
   // Writes go through the batch's serial queue: the undo journal records in
   // execution order, and two writes racing would interleave their effects.
   concurrency: 'serial',

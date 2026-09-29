@@ -18,6 +18,14 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { parseRules, type PermissionRules } from './permissions.ts'
 
+/** Which search API `web_search` calls, and the key it calls it with. */
+export interface WebSearchBackend {
+  provider: 'brave' | 'exa' | 'perplexity'
+  apiKey: string
+}
+
+const SEARCH_PROVIDERS = ['brave', 'exa', 'perplexity'] as const
+
 export interface HiAgentConfig {
   apiKey?: string
   baseURL?: string
@@ -26,6 +34,8 @@ export interface HiAgentConfig {
   permissions?: PermissionRules
   /** Model context window in tokens; enables auto-compaction when set. */
   contextWindow?: number
+  /** Backend for the `web_search` tool. Project config wins over global. */
+  webSearch?: WebSearchBackend
 }
 
 export interface ConfigOverride {
@@ -40,6 +50,8 @@ export interface ResolvedConfig {
   model: string
   /** Model context window (tokens), when configured; enables auto-compaction. */
   contextWindow: number | undefined
+  /** Backend for the `web_search` tool, when configured. */
+  webSearch: WebSearchBackend | undefined
 }
 
 const CONFIG_FILE_NAME = 'config.json'
@@ -134,6 +146,51 @@ function firstDefined(...values: Array<string | undefined>): string | undefined 
 }
 
 /**
+ * Validate a `webSearch` fragment from config or environment. A wrong provider
+ * name or a missing key is a broken configuration the user should hear about
+ * at startup, not a silently disabled tool.
+ */
+function validateWebSearch(
+  candidate: WebSearchBackend,
+  source: string,
+): WebSearchBackend {
+  if (!SEARCH_PROVIDERS.includes(candidate.provider)) {
+    throw new Error(
+      `webSearch.provider must be one of ${SEARCH_PROVIDERS.map((p) => `"${p}"`).join(', ')} ` +
+        `(got "${String(candidate.provider)}" in ${source})`,
+    )
+  }
+  if (typeof candidate.apiKey !== 'string' || candidate.apiKey.trim() === '') {
+    throw new Error(`webSearch.apiKey must be a non-empty string (in ${source})`)
+  }
+  return { provider: candidate.provider, apiKey: candidate.apiKey }
+}
+
+/**
+ * Resolve the `web_search` backend: environment overrides (both variables
+ * together), else project config, else global config. A project section wins
+ * over the global one wholesale — mixing a project provider with a global key
+ * would be a surprise.
+ */
+function resolveWebSearch(
+  project: HiAgentConfig['webSearch'],
+  global: HiAgentConfig['webSearch'],
+  env: NodeJS.ProcessEnv,
+): WebSearchBackend | undefined {
+  const envProvider = env.WEB_SEARCH_PROVIDER
+  const envKey = env.WEB_SEARCH_API_KEY
+  if (envProvider && envKey) {
+    return validateWebSearch(
+      { provider: envProvider as WebSearchBackend['provider'], apiKey: envKey },
+      'WEB_SEARCH_PROVIDER / WEB_SEARCH_API_KEY',
+    )
+  }
+  const candidate = project ?? global
+  if (!candidate) return undefined
+  return validateWebSearch(candidate, project ? 'project config' : 'global config')
+}
+
+/**
  * Resolve the final configuration. Mirrors the previous CLI-only logic, with
  * the file layers inserted between the environment and the built-in defaults.
  */
@@ -186,5 +243,7 @@ export async function resolveConfig(
         ? global.contextWindow
         : undefined
 
-  return { apiKey, baseURL, model, contextWindow }
+  const webSearch = resolveWebSearch(project.webSearch, global.webSearch, env)
+
+  return { apiKey, baseURL, model, contextWindow, webSearch }
 }

@@ -38,10 +38,11 @@ ScriptedLLM does not implement `stream`, so it naturally covers the
 "no-streaming falls back to chat" path; StreamingLLM's `chat` throws,
 preventing accidental wrong-branch execution.
 
-## 3. Suite map (14 files, ~230 cases)
+## 3. Suite map (15 files, ~250 cases)
 
 | File | Cases | Coverage |
 | --- | --- | --- |
+| `web.test.ts` | 18 | Private-host classification (v4/v6/localhost, false positives excluded), HTML→text (script/style/comments/noscript dropped, entities decoded, unknown entities untouched), JSON passthrough, HTTP/content-type/URL-scheme errors, the incremental download cap, content truncation, **the loopback approval gate** (no approver → refuse, denial → nothing fetched, approval → fetch proceeds, request text carries the URL), a redirect landing on a different private host blocked, timeout; `web_search`: the no-backend guidance, Brave/Exa/Perplexity request shapes (endpoint, key header, POST body) and result formatting, API errors |
 | `shell.test.ts` | 45 | **The security-sensitive core**: execution/exit codes/timeout kills/output tail/workdir boundary; the adversarial matrix for the read-only classification (see §4); PowerShell encoding, resolution order, null devices; dual-dialect assertions |
 | `agent.test.ts` | 40 | Full loop semantics: observations fed back, unknown tool/bad JSON/throwing recovery, maxSteps, event order, system prompt assembly, streaming tokens/tool collection/mid-stream abort, approver injection and denial-as-observation, projection vs history fidelity, usage anchoring, compaction (replacement not stacking/failure untouched/emergency projection), cancellation (per-run signal, cancelled calls still answered), undo (byte-exact restore including line endings, removing created files) |
 | `llm.test.ts` | 26 | Wire format, history serialization, id synthesis, error classification (error payload/bad JSON/no choices), total timeout, retries (429/5xx/no retry on 401/Retry-After/backoff bounds/interruptible backoff), idle timeout (slow stream survives, silence fails), SSE reassembly, usage |

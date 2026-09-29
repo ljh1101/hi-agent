@@ -1,4 +1,5 @@
 import type { Tool } from '../types.ts'
+import type { WebSearchBackend } from '../config.ts'
 import type { PermissionRules } from '../permissions.ts'
 import { calculatorTool } from './calculator.ts'
 import { editTool } from './edit.ts'
@@ -6,6 +7,7 @@ import { listDirTool, readFileTool, writeFileTool } from './filesystem.ts'
 import { globTool, grepTool } from './search.ts'
 import { createShellTool, shellTool } from './shell.ts'
 import { currentTimeTool } from './time.ts'
+import { createWebFetchTool, createWebSearchTool, webFetchTool, webSearchTool } from './web.ts'
 
 export { ToolRegistry } from './registry.ts'
 export { calculatorTool, evaluateExpression } from './calculator.ts'
@@ -14,12 +16,16 @@ export { listDirTool, readFileTool, writeFileTool } from './filesystem.ts'
 export { globTool, grepTool } from './search.ts'
 export { createShellTool, shellTool } from './shell.ts'
 export { currentTimeTool } from './time.ts'
+export { createWebFetchTool, createWebSearchTool, webFetchTool, webSearchTool } from './web.ts'
 
 /**
- * The default toolset: math, time, workspace read/write/search/edit, and shell.
- * Pass `rules` to give the shell tool persistent permission rules.
+ * The default toolset: math, time, workspace read/write/search/edit, shell,
+ * and web access. Pass `rules` to give the shell tool persistent permission
+ * rules; pass `webSearch` to arm the web_search tool with a backend.
  */
-export function createDefaultTools(options: { rules?: PermissionRules } = {}): Tool[] {
+export function createDefaultTools(
+  options: { rules?: PermissionRules; webSearch?: WebSearchBackend } = {},
+): Tool[] {
   return [
     calculatorTool as Tool,
     currentTimeTool as Tool,
@@ -30,5 +36,7 @@ export function createDefaultTools(options: { rules?: PermissionRules } = {}): T
     globTool as Tool,
     grepTool as Tool,
     createShellTool({ rules: options.rules }),
+    webFetchTool,
+    createWebSearchTool({ backend: options.webSearch }),
   ]
 }

@@ -11,7 +11,7 @@ want to" tension:
 
 | File | Contents | Permissions | Committed |
 | --- | --- | --- | --- |
-| Global `config.json` | API key + personal defaults | `chmod 0600` after first write | never |
+| Global `config.json` | API key, personal defaults, the `webSearch` backend (another secret) | `chmod 0600` after first write | never |
 | Project `<root>/hi-agent.json` | secret-free defaults (baseURL, model, permissions, contextWindow) | normal | shared with the repo |
 
 ### Locations
@@ -52,6 +52,11 @@ Within the environment, `AGENT_*` outranks `OPENAI_*` / `DEEPSEEK_*`.
     global → DeepSeek/OpenAI default;
   - `contextWindow`: project → global (must be a positive number; undefined =
     auto-compaction disabled). File layers only; no CLI/env passthrough.
+  - `webSearch`: env (`WEB_SEARCH_PROVIDER` **and** `WEB_SEARCH_API_KEY`,
+    both required together) → project → global. A section that is present but
+    invalid (unknown provider, empty key) throws at startup; a project
+    section displaces the global one wholesale — no mixing a project provider
+    with a global key.
 - **Parse-time validation**: a JSON syntax error or a non-object root throws
   immediately with the file path — bad config must explode at startup, not
   silently fall back mid-run. The `permissions` field goes through
@@ -144,3 +149,12 @@ A committable project config example:
 
 The semantics and merging of `permissions` are doc 04 §3; `contextWindow`
 is set here manually for private deployments models.dev cannot size.
+
+`webSearch` configures the `web_search` backend and belongs in the **global**
+config, because it carries a key:
+
+```json
+{ "webSearch": { "provider": "brave", "apiKey": "..." } }
+```
+
+Providers: `brave`, `exa`, `perplexity` (doc 05 §9).

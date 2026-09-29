@@ -1,7 +1,7 @@
 # 05 · The Tool Set (tools/*)
 
 Covers: `src/tools/registry.ts`, `index.ts`, `calculator.ts`, `time.ts`,
-`filesystem.ts`, `edit.ts`, `search.ts`, `shell.ts`.
+`filesystem.ts`, `edit.ts`, `search.ts`, `shell.ts`, `web.ts`.
 
 Tools are plain objects: name + description + JSON Schema + `execute` (plus
 optional `timeoutMs` / `concurrency` / `promptSnippet` / `promptGuidelines`).
@@ -27,9 +27,9 @@ Where a call needs consent the tool calls `ctx.approve` in `execute`.
 set advertised to the model; `execute` and other runtime details stay off
 the wire.
 
-`createDefaultTools({ rules })` returns the 9 tools; `rules` carries the
-persistent permission rules from project/global config and feeds only the
-shell tool:
+`createDefaultTools({ rules, webSearch })` returns the 11 tools; `rules`
+carries the persistent permission rules from project/global config and feeds
+only the shell tool; `webSearch` arms `web_search` with its backend (doc 07):
 
 | Tool | Approval | Default timeout | In one line |
 | --- | --- | --- | --- |
@@ -42,6 +42,8 @@ shell tool:
 | `glob` | none | 30s | Find files by path pattern |
 | `grep` | none | 30s | Search contents by regex |
 | `shell` | deny → allow → read-only whitelist → approver | 305s (tool-owned) | Run shell commands (permission chain + process-tree management) |
+| `web_fetch` | public URLs free; private/loopback → approver | 20s (tool-owned) | Fetch a URL, HTML → text (no JS execution) |
+| `web_search` | none (calls the configured search API) | 20s (tool-owned) | Web search via the configured backend (doc 07) |
 
 ## 2. calculator (calculator.ts)
 
@@ -210,7 +212,45 @@ contract here:
 - Non-zero exit, timeout, and abort all throw with the captured output — the
   model can read the failure scene.
 
-## 9. New-tool checklist (hard requirements from AGENTS.md)
+## 9. web (web.ts): web_fetch / web_search
+
+**web_fetch** is deliberately a client-side implementation (roadmap item 2):
+provider-independent, offline-testable, approvable. One GET over the global
+`fetch`:
+
+- **Bounds**: a 20s timeout (combined with `ctx.signal` through
+  `AbortSignal.any`), a 2MB *incremental* download cap (the stream is
+  abandoned mid-body, never downloaded whole), and a 20,000-character content
+  cap with a truncation marker. Redirects follow the platform default cap;
+  the **final** URL is re-checked against the private-address gate below
+  before any content is shown.
+- **Content-type gate**: `text/*`, `application/json`, `application/xml`,
+  `application/xhtml+xml`; anything else (binary payloads) is refused. HTML
+  goes through a minimal converter: comments and
+  `script`/`style`/`noscript`/`template` subtrees dropped, block tags become
+  line breaks, remaining tags stripped, named + numeric entities decoded,
+  whitespace collapsed. It never renders and never executes JavaScript. JSON
+  passes through untouched.
+- **The intranet gate (consent, not containment — doc 04)**: a fetch tool is
+  one call away from the user's network. `isPrivateHost` classifies hostname
+  literals — `localhost`/`*.localhost`/`*.local`, IPv4 `0/8`, `10/8`, `127/8`,
+  `172.16/12`, `192.168/16`, `169.254/16`, IPv6 `::1`, `::`, `::ffff:`-mapped
+  IPv4, `fc00::/7`, `fe80::/10` — and a request to any of them requires
+  `ctx.approve` (denied by default with no approver). Approving one host does
+  not extend to a *different* private host reached by redirect: an approval
+  for `127.0.0.1` does not cover `localhost`.
+
+**web_search** is a thin client for one config-chosen API: `brave` (GET
+`api.search.brave.com`, `x-api-key` header), `exa` (POST `api.exa.ai/search`),
+or `perplexity` (POST `api.perplexity.ai/chat/completions`, an answer plus
+citations). The backend comes from config (doc 07); with none configured the
+tool explains how to add one instead of failing silently. Results format as
+`[n] title — url` with a snippet, capped like `web_fetch`. Provider-native
+server-side web tools (DeepSeek / Anthropic / OpenRouter `:online`) are a
+different, later mechanism — they need roadmap item 3's per-provider protocol
+work and item 3.2's content blocks.
+
+## 10. New-tool checklist (hard requirements from AGENTS.md)
 
 1. **Approval review**: a side-effecting tool has its approval behavior
    reviewed before joining `createDefaultTools()`; where a call needs

@@ -10,6 +10,7 @@ parts of `src/tools/shell.ts`, and the path-boundary parts of
 | --- | --- | --- |
 | File tools cannot escape the workspace root | **Containment**, mechanically enforced | `resolveToolPath` |
 | Whether a shell command asks the user | **Consent**, heuristic | whitelist + rules + approver |
+| Whether web_fetch may reach a private/loopback address | **Consent**, heuristic | `isPrivateHost` + `ctx.approve` (doc 05 §9) |
 
 Every command on the whitelist can read any file the user can read, on every
 platform — the same posture Codex (read-only still reads the whole disk),
@@ -286,6 +287,9 @@ of the chain. The CLI's implementation is in doc 08 (`y`/`a`/`n`, `a`
 remembers the prefix for the session; `--yes` auto-approves everything;
 without a TTY approval is refused). Library users who provide no approver
 get deny-by-default for anything off the whitelist — the safe default.
+The same hook gates `web_fetch`'s private/loopback targets (doc 05 §9):
+approval is per URL, one host at a time, and never extends to a different
+private host reached by redirect.
 
 ## 8. Known boundaries and an honest limitations list
 
@@ -303,3 +307,8 @@ get deny-by-default for anything off the whitelist — the safe default.
    stayed invisible).
 4. Variables outside the `childEnv` list are invisible inside the shell —
    deliberate; extending requires review.
+5. `web_fetch`'s private-address gate sees hostname literals only: a DNS
+   name that resolves into a private range is not caught (and the redirect
+   check only inspects the final URL). The gate is consent — an approval
+   prompt for obviously-inside targets — not containment; a filtering proxy
+   or an OS sandbox is what closes that class of hole.

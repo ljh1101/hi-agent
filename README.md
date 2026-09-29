@@ -77,6 +77,7 @@ changes. Ctrl+C cancels the turn in flight; twice (or at the prompt) quits.
 | `AGENT_BASE_URL` | OpenAI-compatible base URL, including `/v1` | `https://api.openai.com/v1` (DeepSeek's URL if only `DEEPSEEK_API_KEY` is set) |
 | `AGENT_MODEL` | Model id | `gpt-4o-mini` (`deepseek-chat` for DeepSeek) |
 | `HI_AGENT_CONFIG_DIR` | Override the global config directory | platform default |
+| `WEB_SEARCH_PROVIDER` + `WEB_SEARCH_API_KEY` | Search backend for `web_search` (must be set together) | `webSearch` in global/project config |
 
 CLI flags: `--model`, `--base-url`, `--api-key`, `--max-steps`, `--system`,
 `--root`, `--setup`, `--list-providers`, `--continue`, `--resume <id>`,
@@ -133,6 +134,8 @@ it robust:
 | `glob` | Find files by path pattern (`**/*.ts`, `{a,b}`, `?`) |
 | `grep` | Search file contents by regex, returning `file:line` matches with optional context |
 | `shell` | Execute a shell command (`bash` on POSIX, PowerShell on Windows), gated by a read-only command whitelist + approval |
+| `web_fetch` | Fetch a URL and return its text: HTML converted to plain text, JSON passed through, JavaScript never executed; localhost/private targets ask for approval |
+| `web_search` | Search the web via a configured API (Brave, Exa, or Perplexity — set `webSearch` in the global config) |
 
 Adding one is a single object:
 
@@ -338,13 +341,12 @@ the source, and what is explicitly rejected — lives in
 feature comparison against DeepSeek Harness and Pi, filtered by one rule:
 an addition on top of the same loop, never a rewrite. In priority order:
 
-1. **Web access**: a `web_fetch` tool, then `web_search`.
-2. **Reasoning content, content blocks, native providers** (Anthropic,
+1. **Reasoning content, content blocks, native providers** (Anthropic,
    Google) — staged behind the same `LLM` interface.
-3. **Session fork**, later a branch tree.
-4. **Custom slash commands** from declarative prompt templates.
-5. **Sub-agents**: a read-only `task` tool.
-6. **MCP client** (stdio, zero-dependency).
+2. **Session fork**, later a branch tree.
+3. **Custom slash commands** from declarative prompt templates.
+4. **Sub-agents**: a read-only `task` tool.
+5. **MCP client** (stdio, zero-dependency).
 
 Then: workspace instruction auto-load, skills, tool-output spill, overflow
 recovery, cost display, todo lists, background shell, and — carried over
@@ -352,9 +354,11 @@ from the old list — long-term memory beyond session files.
 
 Formerly on this list and now shipped: context compaction (auto-triggered
 with a discovered `contextWindow`, or `/compact`), session persistence
-(`--continue`/`--resume`, `/session`, JSONL files), undo (`/undo`), and
-parallel tool execution (batched calls run concurrently; mutating tools
-stay serialized so the undo journal order equals execution order).
+(`--continue`/`--resume`, `/session`, JSONL files), undo (`/undo`), parallel
+tool execution (batched calls run concurrently; mutating tools stay
+serialized so the undo journal order equals execution order), and web access
+(`web_fetch`, plus `web_search` against a configured Brave/Exa/Perplexity
+backend).
 
 Pick the one your use case needs first; the interfaces in `src/types.ts` are
 small enough that none of them require touching the loop.

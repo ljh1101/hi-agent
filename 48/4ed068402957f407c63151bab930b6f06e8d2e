@@ -1,0 +1,40 @@
+README.md
+  h_54103a8788b599 341-342,344-347,355-357
+doc/en/01-agent-loop.md
+  h_54103a8788b599 174-180,185-196
+doc/en/05-tools.md
+  h_54103a8788b599 7-15
+doc/en/10-roadmap.md
+  h_54103a8788b599 318-322
+doc/zh/01-agent-loop.md
+  h_54103a8788b599 160-165,170-177
+doc/zh/05-tools.md
+  h_54103a8788b599 7-14
+doc/zh/10-roadmap.md
+  h_54103a8788b599 274-277
+src/agent.ts
+  h_54103a8788b599 370-376,382-384,478-508
+src/prompts/system.ts
+  h_54103a8788b599 17
+src/tools/edit.ts
+  h_54103a8788b599 42-44
+src/tools/filesystem.ts
+  h_54103a8788b599 260-262
+src/tools/shell.ts
+  h_54103a8788b599 682-684
+src/types.ts
+  h_54103a8788b599 187-199
+test/agent.test.ts
+  h_54103a8788b599 103-263
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "5.30.1",
+  "base_commit_sha": "484ed068402957f407c63151bab930b6f06e8d2e",
+  "prompts": {},
+  "humans": {
+    "h_54103a8788b599": {
+      "author": "liujiahui <liujiahui1101@163.com>"
+    }
+  }
+}

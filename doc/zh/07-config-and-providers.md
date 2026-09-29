@@ -10,7 +10,7 @@
 
 | 文件 | 内容 | 权限 | 是否提交 |
 | --- | --- | --- | --- |
-| 全局 `config.json` | API key、个人默认值、`webSearch` 后端（同样是密钥） | 首次写入后 `chmod 0600` | 绝不 |
+| 全局 `config.json` | API key、个人默认值、`protocol`、`webSearch` 后端、`mcpServers`（env 映射可能带密钥） | 首次写入后 `chmod 0600` | 绝不 |
 | 项目 `<root>/hi-agent.json` | 无密默认值（baseURL、model、protocol、permissions、contextWindow） | 普通文件 | 随仓库共享 |
 
 ### 位置
@@ -127,7 +127,7 @@ cli.ts 的 `pickModel` 用它做实时模型发现，失败回落手输。
   → setupFirstRun: 选 provider（或手输 baseURL）→ 输 key
   → listModels 实时发现模型 → 选号（失败手输）
   → lookupContextWindow 查窗口（失败跳过，压缩不启用）
-  → saveGlobalConfig({apiKey, baseURL, model, contextWindow?})  0600
+  → saveGlobalConfig({apiKey, baseURL, model, protocol?, contextWindow?})  0600
 后续运行
   → resolveConfig: CLI > env(.env) > project > global > 默认
   → /model 切换: setLLM（对话保留）+ saveGlobalConfig({model, contextWindow?})

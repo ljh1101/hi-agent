@@ -11,7 +11,7 @@ want to" tension:
 
 | File | Contents | Permissions | Committed |
 | --- | --- | --- | --- |
-| Global `config.json` | API key, personal defaults, the `webSearch` backend (another secret) | `chmod 0600` after first write | never |
+| Global `config.json` | API key, personal defaults, `protocol`, the `webSearch` backend, `mcpServers` (env maps can carry secrets) | `chmod 0600` after first write | never |
 | Project `<root>/hi-agent.json` | secret-free defaults (baseURL, model, protocol, permissions, contextWindow) | normal | shared with the repo |
 
 ### Locations
@@ -141,7 +141,7 @@ First run (no key, TTY)
   → setupFirstRun: pick a provider (or enter a baseURL) → enter the key
   → listModels discovers models live → pick by number (manual entry on failure)
   → lookupContextWindow (skipped on failure; compaction stays disabled)
-  → saveGlobalConfig({apiKey, baseURL, model, contextWindow?})  0600
+  → saveGlobalConfig({apiKey, baseURL, model, protocol?, contextWindow?})  0600
 Subsequent runs
   → resolveConfig: CLI > env(.env) > project > global > defaults
   → /model switch: setLLM (conversation kept) + saveGlobalConfig({model, contextWindow?})

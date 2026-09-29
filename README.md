@@ -79,6 +79,7 @@ for global ones) — `$ARGUMENTS` is replaced with what you typed. Ctrl+C cancel
 | `AGENT_API_KEY` | API key | falls back to `OPENAI_API_KEY`, then `DEEPSEEK_API_KEY` |
 | `AGENT_BASE_URL` | OpenAI-compatible base URL, including `/v1` | `https://api.openai.com/v1` (DeepSeek's URL if only `DEEPSEEK_API_KEY` is set) |
 | `AGENT_MODEL` | Model id | `gpt-4o-mini` (`deepseek-chat` for DeepSeek) |
+| `AGENT_PROTOCOL` | Wire protocol: `openai` / `anthropic` / `google` | inferred from a known base URL, else `openai` |
 | `HI_AGENT_CONFIG_DIR` | Override the global config directory | platform default |
 | `WEB_SEARCH_PROVIDER` + `WEB_SEARCH_API_KEY` | Search backend for `web_search` (must be set together) | `webSearch` in global/project config |
 
@@ -99,9 +100,10 @@ for (let step = 1; step <= maxSteps; step++) {
   history.push({ role: 'assistant', content: reply.content, tool_calls: reply.toolCalls })
 
   if (reply.toolCalls.length === 0) return reply.content   // 2. no tools? that is the answer
-  for (const call of reply.toolCalls) {
-    const observation = await runTool(call)                // 3. run every tool
-    history.push({ role: 'tool', content: observation, tool_call_id: call.id })
+  const observations = await executeBatch(reply.toolCalls) // 3. run every tool: reads in
+  for (const [i, call] of reply.toolCalls.entries()) {     //    parallel, writers serialized;
+    history.push({ role: 'tool',                           //    observations append in
+      content: observations[i], tool_call_id: call.id })   //    tool_calls order
   }                                                        // 4. loop: the model sees the results
 }
 ```
@@ -114,9 +116,11 @@ it robust:
    the model gets to read and recover from. The loop only throws when the
    *provider* fails (auth, HTTP, network), because there is nothing to recover
    from locally.
-2. **The model is just an interface.** `LLM` (`src/types.ts`) has exactly one
-   method. `OpenAICompatibleLLM` implements it over `fetch`; tests swap in a
-   scripted fake. Swapping providers means changing one file, not the loop.
+2. **The model is just an interface.** `LLM` (`src/types.ts`) is one `chat`
+   plus an optional `stream`. Three implementations exist behind the
+   `createLLM` factory — OpenAI-compatible, native Anthropic, native Google —
+   and tests swap in a scripted fake. Swapping providers means changing the
+   client layer, never the loop.
 3. **Tools are just objects.** A tool is a name, a description, a JSON Schema
    and an `execute` function. There is no plugin system to learn.
 4. **History is truth, requests are projections.** `agent.history` keeps full
@@ -263,30 +267,36 @@ summarization failure the history is left untouched.
 
 ```
 src/
-  types.ts             the whole contract: ChatMessage, LLM, Tool, events (~230 lines)
+  types.ts             the whole contract: ChatMessage, LLM, Tool, ContentBlock, events
   agent.ts             the loop, history management, tool execution, error recovery
-  llm.ts               OpenAI-compatible client + retry/backoff + SSE streaming
+  llm.ts               OpenAI-compatible client + retry/backoff + SSE + createLLM factory
+  llm-anthropic.ts     native Anthropic Messages adapter
+  llm-google.ts        native Google Gemini adapter
   context.ts           request projection + token accounting + LLM compaction
-  session.ts           JSONL session persistence (list / switch / resume)
+  session.ts           JSONL session persistence (list / switch / resume / fork)
   changes.ts           undo journal: what each turn wrote, and how to put it back
   prompts/system.ts    system prompt assembly (identity, tools section, rules)
+  commands.ts          custom slash commands: load templates, expand $ARGUMENTS
+  mcp.ts               MCP client over stdio (JSON-RPC, no SDK) + the tool source
   config.ts            global vs project config loading + secret resolution
-  providers.ts         provider presets + `/models` discovery
+  providers.ts         provider presets + `/models` discovery + protocol inference
   permissions.ts       shell prefix permission rules (allow / deny, deny wins)
   command-parse.ts     shell command splitting + leading-word extraction
   index.ts             the library's public surface (re-exports)
   tools/
-    registry.ts        name -> tool map, schema projection
+    registry.ts        name -> tool map, schema projection, ToolSource seam
     calculator.ts      recursive-descent expression parser
     filesystem.ts      read_file / write_file / list_dir + workspace confinement
     search.ts          glob / grep (find files by name or content)
     edit.ts            str-replace precise editing
     shell.ts           shell execution: read-only whitelist, rules, process-tree kill
+    web.ts             web_fetch (HTML -> text, private-address gate) + web_search
+    task.ts            sub-agent tool (own context, read-only tool set)
     time.ts            current_time
     index.ts           the default toolset
   cli.ts               one-shot and interactive entry point
 examples/demo.ts       the loop running against a scripted model, offline
-test/                  suites: loop, parser, tools, search, edit, line endings, shell, permissions, config, context, streaming, end-to-end
+test/                  20 offline suites: loop, parser, tools, web, task, MCP, adapters, sessions, shell, permissions, config, context, end-to-end
 doc/                   per-module design docs in zh + en (index: doc/README.md)
 ```
 

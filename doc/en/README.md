@@ -81,11 +81,15 @@ Data flow of one `agent.run("question")`:
 | `src/types.ts` | All core contracts: ChatMessage / LLM / Tool / events / undo | [01](01-agent-loop.md) |
 | `src/agent.ts` | The loop, history, tool execution and error normalization, cancellation, undo | [01](01-agent-loop.md) |
 | `src/prompts/system.ts` | System prompt assembly (identity / tools section / rules) | [01](01-agent-loop.md) |
-| `src/llm.ts` | OpenAI-compatible client + retry/backoff + SSE streaming | [02](02-llm-client.md) |
+| `src/llm.ts` | OpenAI-compatible client + retry/backoff + SSE streaming + the `createLLM` factory | [02](02-llm-client.md) |
+| `src/llm-anthropic.ts` | Native Anthropic Messages adapter (same `LLM` interface) | [02](02-llm-client.md) |
+| `src/llm-google.ts` | Native Google Gemini adapter (same `LLM` interface) | [02](02-llm-client.md) |
 | `src/context.ts` | Request projection, token accounting, LLM compaction | [03](03-context-management.md) |
 | `src/permissions.ts` | Shell prefix rules (allow/deny, deny wins) | [04](04-safety-and-permissions.md) |
 | `src/command-parse.ts` | Shell command splitting + leading-word extraction (dialect-aware) | [04](04-safety-and-permissions.md) |
-| `src/tools/*` | Tool registry and the 9 tools | [05](05-tools.md) |
+| `src/commands.ts` | Custom slash commands: template loading, `$ARGUMENTS` expansion | [08](08-cli.md) |
+| `src/mcp.ts` | MCP client over stdio; mounts `mcp__<server>__<tool>` tools | [04](04-safety-and-permissions.md), [05](05-tools.md) |
+| `src/tools/*` | Tool registry (plus the one `ToolSource` seam) and the 12 built-in tools | [05](05-tools.md) |
 | `src/session.ts` | JSONL session persistence (serialized write queues) | [06](06-session-and-undo.md) |
 | `src/changes.ts` | Undo journal: what each turn wrote, how to put it back | [06](06-session-and-undo.md) |
 | `src/config.ts` | Config layering (CLI > env > project > global), secret resolution | [07](07-config-and-providers.md) |
@@ -98,20 +102,24 @@ Data flow of one `agent.run("question")`:
 
 ```
 src/
-  types.ts             contracts: messages, model interface, tool interface, events
+  types.ts             contracts: messages, model interface, tool interface, blocks, events
   agent.ts             the loop itself (the only core)
-  llm.ts               the only file that knows the OpenAI wire format
+  llm.ts               the OpenAI-compatible client, the retry/SSE plumbing, the factory
+  llm-anthropic.ts     native Anthropic Messages adapter
+  llm-google.ts        native Google Gemini adapter
   context.ts           what the model sees (projection) and window management
   session.ts           session files on disk
   changes.ts           what happened on disk, and how to reverse it
+  commands.ts          custom slash commands (markdown templates)
+  mcp.ts               MCP over stdio: JSON-RPC client + tool source
   config.ts            where keys and defaults come from
   providers.ts         which providers exist, how big their windows are
   permissions.ts       which commands run without asking
   command-parse.ts     how shell commands split into subcommands
   prompts/system.ts    what the model is told it is
-  tools/               what the model can do
+  tools/               what the model can do (12 built-ins + MCP-mounted)
   cli.ts               how a human uses it
-test/                  fully offline: fake LLM + local fake provider
+test/                  fully offline: fake LLM + local fake provider + a real stdio MCP server
 examples/demo.ts       keyless offline demo (npm run demo)
 ```
 
@@ -125,8 +133,8 @@ These four are the project's soul. Read them before changing anything:
    *provider* failures (auth, HTTP, network), because nothing can be
    recovered locally.
 2. **The model is just an interface.** `LLM` is one `chat` plus an optional
-   `stream`. Swapping providers means editing `src/llm.ts` only; tests swap
-   in a scripted fake.
+   `stream`. Swapping providers means editing the client layer (`src/llm.ts`
+   plus the adapters beside it); tests swap in a scripted fake.
 3. **Tools are just objects.** Name + description + JSON Schema + `execute`,
    plus the `promptSnippet`/`promptGuidelines` that feed the system prompt.
    No plugin system.

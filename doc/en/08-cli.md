@@ -13,9 +13,14 @@ loadDotEnv → parseArgs
   → (options.setup or no key with TTY) → setupFirstRun
   → still no key → error, exit (points to --setup / npm run demo)
   → load and merge permission rules (project + global, mergeRules in doc 04)
+  → load custom slash commands (commands.ts, doc 08 §7)
   → --continue / --resume → load the previous session (see §4)
+  → mcpServers configured → new McpHub + connect() (a broken server is
+    logged and skipped), then registry.loadSource(hub) — BEFORE the Agent is
+    constructed, because the system prompt's tools section is built from it
   → new Agent({...}) + restoreHistory + setApprover
   → options.prompt present → one-shot mode; otherwise → repl()
+  → finally: mcpHub.close() — no MCP child outlives the CLI, on every path
 ```
 
 ## 2. Arguments (CliOptions)
@@ -98,10 +103,12 @@ The handler is registered on both `rl.on('SIGINT')` and
 | `/session` | list sessions (newest first, current marked, with titles) |
 | `/session new` | new session (the old file stays; `store.id = undefined`, lazily created on the next turn) |
 | `/session <n or id>` | switch by list number or id (exact → prefix); `loadSession` → `restoreHistory` |
-| `/model` | `listModels` live list → pick → `setLLM` (**conversation kept**) → window lookup → `saveGlobalConfig` |
+| `/model` | `listModels` live list → pick → `setLLM` + `llmRef.current` update (sub-agents follow, doc 05 §10) (**conversation kept**) → window lookup → `saveGlobalConfig` |
 | `/model <id>` | switch straight to a model by name |
 | `/compact` | manual compaction; distinct success/failure messages |
 | `/undo` | undo the last turn (three output variants, doc 06 §3) |
+| `/fork [n]` | copy the conversation up to the end of turn `n` (whole history when omitted) into a NEW session file and continue there; the source file is untouched (doc 06 §6) |
+| `/review args`, ... | a custom command template (doc 08 §7): the file body with `$ARGUMENTS` replaced becomes the user message |
 | `exit`/`quit`/`:q` | leave |
 
 ### The approval prompt makeApprover

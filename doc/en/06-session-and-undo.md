@@ -170,3 +170,29 @@ usable (doc 08).
 | `/undo` with rewind | one `compaction` line appended (snapshot = truncated history) |
 | `/undo` without rewind | no disk action (conversation unchanged; file changes were never persisted anyway) |
 | `/session new` / switching | none (the old file stays; the next turn lazily creates a new file) |
+| `/fork [n]` | a NEW file is written in one go (header + one snapshot line); the source file is untouched; the CLI then appends new turns to the fork |
+
+## 6. Session fork (`/fork [n]`) — roadmap item 4
+
+Sessions can be switched but not split: one wrong direction poisons the rest
+of the file. `/fork [n]` copies the conversation up to the end of the `n`-th
+user turn (or the whole history, when `n` is omitted) into a **new** session
+file and continues there; the source file is never modified.
+
+Mechanics, deliberately boring:
+
+- `historyUpToTurn(history, n)` (session.ts) makes the cut: a turn is one
+  user message plus everything after it, so the cut never separates a tool
+  result from its call; system messages always ride along; more turns
+  requested than exist keeps everything. The CLI validates `n >= 1` before
+  calling.
+- `createForkSession(configDir, model, history)` writes header + ONE
+  full-history snapshot line — exactly the line format compaction already
+  uses, so `loadSession` replays a fork with no new code path (a real branch
+  tree with per-line parent pointers is a later, separate change; compaction
+  already keeps pre-snapshot lines on disk, which is what a future tree will
+  need).
+- The REPL switches `store.id` to the fork id: subsequent turns append to the
+  fork. The conversation in memory is unchanged — fork copies, it does not
+  rewind.
+

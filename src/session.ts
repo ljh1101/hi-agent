@@ -157,6 +157,60 @@ export async function appendCompaction(
   )
 }
 
+/**
+ * Slice the history down to the end of the `turns`-th user turn (roadmap 4,
+ * `/fork [n]`). A turn is one user message plus everything that follows it
+ * (assistant replies, tool results), so the cut never separates a tool result
+ * from its call. System messages always ride along. When the history has
+ * fewer turns than requested, the whole history is kept.
+ */
+export function historyUpToTurn(
+  history: readonly ChatMessage[],
+  turns: number,
+): ChatMessage[] {
+  if (!Number.isInteger(turns) || turns < 1) return [...history]
+  let seen = 0
+  for (let index = 0; index < history.length; index++) {
+    if (history[index]!.role !== 'user') continue
+    seen++
+    if (seen === turns) {
+      let end = index + 1
+      while (end < history.length && history[end]!.role !== 'user') end++
+      return history.slice(0, end)
+    }
+  }
+  return [...history]
+}
+
+/**
+ * Write a NEW session file that starts life with the given history: a header
+ * line plus one full-history snapshot line — exactly the line format
+ * compaction already uses, so replay needs no new code path (roadmap 4).
+ * The source session file is untouched; the returned id is where new turns go.
+ */
+export async function createForkSession(
+  configDir: string,
+  model: string,
+  history: readonly ChatMessage[],
+): Promise<string> {
+  const id = newSessionId()
+  const dir = sessionsDir(configDir)
+  await mkdir(dir, { recursive: true })
+  const header: SessionHeader = {
+    kind: 'header',
+    id,
+    createdAt: new Date().toISOString(),
+    model,
+  }
+  const snapshot: SessionLine = { kind: 'compaction', history: [...history] }
+  await writeFile(
+    sessionPath(configDir, id),
+    `${JSON.stringify(header)}\n${JSON.stringify(snapshot)}\n`,
+    'utf8',
+  )
+  return id
+}
+
 export interface LoadedSession {
   header: SessionHeader
   history: ChatMessage[]

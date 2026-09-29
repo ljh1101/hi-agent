@@ -18,20 +18,6 @@
 
 ## P1 — 接下来做
 
-### 4. 会话 fork（之后是分支树）
-
-**问题。** 会话只能切换，不能分叉：一次走错方向就污染整个文件。
-（pi 有 `/tree`、`/fork`、`/clone` 与编辑重发；dsh 支持在 turn 边界
-fork。）
-
-**方案。** 先做 `/fork [n]`：写一个新会话文件，内容是 header 加一条
-截至第 `n` 个 turn 的全量 history 快照行。compaction 快照已经定义了
-完全相同的行格式，回放不需要新代码路径。真正的分支树（每行 parent
-指针、`/tree` 导航、编辑重发）是之后另一个独立变更；注意 compaction
-本来就把快照前的行留在磁盘上，这正是未来分支树需要的。
-
-**落点。** `session.ts`、`cli.ts`。
-
 ### 5. 自定义 slash 命令（prompt 模板）
 
 **问题。** slash 命令硬编码在 `cli.ts`；用户无法添加自己的可复用
@@ -229,6 +215,10 @@ shell 的只读白名单，要么空转成摆设。某个调用需要用户同�
   场合由 `textOfContent` 展平；(3.3) 原生适配器 `llm-anthropic.ts` 与
   `llm-google.ts` 实现同一个 `LLM` 接口，由 provider 预设的 `protocol`
   字段选择（02 篇）。
+- 会话 fork（第 4 项）——`/fork [n]` 写一个新会话文件（header + 一条
+  全量 history 快照行，正是 compaction 已有的行格式），内容是截至第 `n`
+  个 user turn 结束的对话，REPL 随后在 fork 里继续；源文件不动
+  （doc 06 §6）。真正的分支树仍是之后另一个独立变更。
 - Web 访问（第 2 项）——先 `web_fetch`：客户端 GET，带超时、下载/内容
   上限、content-type 门禁、最小 HTML 转文本，私网/回环目标走审批
   （05 篇 §9）。再 `web_search`：配置所选 API（Brave / Exa / Perplexity，

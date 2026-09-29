@@ -1,0 +1,34 @@
+README.md
+  h_54103a8788b599 70-73
+doc/en/06-session-and-undo.md
+  h_54103a8788b599 173-198
+doc/en/09-testing.md
+  h_54103a8788b599 55
+doc/en/10-roadmap.md
+  h_54103a8788b599 254-258
+doc/zh/06-session-and-undo.md
+  h_54103a8788b599 153-173
+doc/zh/09-testing.md
+  h_54103a8788b599 51
+doc/zh/10-roadmap.md
+  h_54103a8788b599 218-221
+src/cli.ts
+  h_54103a8788b599 20,23,80-83,393,432-461
+src/index.ts
+  h_54103a8788b599 48,52
+src/session.ts
+  h_54103a8788b599 160-213
+test/session.test.ts
+  h_54103a8788b599 8,12,223-288
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "5.30.1",
+  "base_commit_sha": "759bbe39984eb1ad884bf9ee4f30717ccce01ea6",
+  "prompts": {},
+  "humans": {
+    "h_54103a8788b599": {
+      "author": "liujiahui <liujiahui1101@163.com>"
+    }
+  }
+}

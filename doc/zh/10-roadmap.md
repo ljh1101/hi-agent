@@ -18,38 +18,6 @@
 
 ## P1 — 接下来做
 
-### 2. Web 访问：先 `web_fetch`，再 `web_search`
-
-**问题。** hi-agent 完全离线：任何需要当前信息的事——文档、包仓库、
-API——都做不了。这是对照两个参考项目最大的能力代差。（dsh 内置
-`web_fetch`/`web_search` 且有可插拔后端：DeepSeek search、Exa、
-Perplexity、纯 HTTP；pi 交给扩展。）
-
-**方案。** `web_fetch`：用全局 `fetch` 发 GET，带超时、重定向上限和
-大小上限；content-type 门禁（`text/*`、`application/json`）；一段最小
-的 HTML 转文本（剔除 `script`/`style`、解码实体——完整的 markdown
-转换不是 v1 要求）；截断行为与其他工具一致。永不执行 JS。发往
-loopback/私网地址的请求走审批：能 fetch `http://localhost:…` 的工具
-就是一扇通往内网的门。无论 provider 是谁，`web_fetch` 都保持客户端
-实现：与 provider 无关、可离线测试、可审批——而"抓取用户给出的
-URL"是任何搜索后端都替代不了的需求。
-
-`web_search` 在 `web_fetch` 之后落地，后端分两类。默认一类是配置所选
-搜索 API（Brave / Exa / Perplexity）的薄客户端，本质就是 fetch 一个
-搜索 API。另一类是 provider 原生的服务端 web 工具——DeepSeek 的原生
-web search（Anthropic 式工具声明格式）、Anthropic 的 `web_search` /
-`web_fetch` server tool、OpenRouter 的 `:online` 后缀。这些不是标准
-OpenAI Chat Completions 的字段：只有经第 3 项的按 provider 协议工作
-才能接上，且其结果以 content block（`server_tool_use`、citations）
-返回，只有 3.2 的消息模型装得下。它们是客户端工具的补充而非替代——
-绑定 provider、按次计费；客户端工具则对任何端点可用。
-
-**落点。** `src/tools/web.ts`（新增）、`config.ts`（搜索后端 key）、
-`prompts/system.ts`（工具片段）。
-
-**护栏。** 适用 doc 05 的新增工具检查单；审批行为与其他副作用一样
-必须评审（见下面的“一个维护决策，已定”）。
-
 ### 3. Reasoning content、content block、原生 provider
 
 **问题。** `ChatMessage` 只有纯文本。OpenAI 兼容的推理 provider（包括
@@ -278,3 +246,7 @@ shell 的只读白名单，要么空转成摆设。某个调用需要用户同�
   `Tool` 带 `concurrency` 提示（默认 `concurrent`，改状态的
   `write_file`/`edit`/`shell` 为 `serial`），observation 按 `tool_calls`
   原序追加，history 保持可回放、日志顺序等于执行顺序（doc 01）。
+- Web 访问（第 2 项）——先 `web_fetch`：客户端 GET，带超时、下载/内容
+  上限、content-type 门禁、最小 HTML 转文本，私网/回环目标走审批
+  （05 篇 §9）。再 `web_search`：配置所选 API（Brave / Exa / Perplexity，
+  07 篇）的薄客户端；provider 原生的服务端 web 工具仍推迟到第 3 项。

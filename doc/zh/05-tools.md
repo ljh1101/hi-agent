@@ -1,7 +1,7 @@
 # 05 · 工具集（tools/*）
 
 覆盖文件：`src/tools/registry.ts`、`index.ts`、`calculator.ts`、
-`time.ts`、`filesystem.ts`、`edit.ts`、`search.ts`、`shell.ts`。
+`time.ts`、`filesystem.ts`、`edit.ts`、`search.ts`、`shell.ts`、`web.ts`。
 
 工具是普通对象：name + description + JSON Schema + `execute`（+ 可选
 `timeoutMs` / `concurrency` / `promptSnippet` / `promptGuidelines`）。没有
@@ -25,8 +25,9 @@
 `definitions()` 投影出 `{ name, description, parameters }`——广告给模型的
 最小集，`execute` 等运行时细节不上线。
 
-`createDefaultTools({ rules })` 返回 9 个工具；`rules` 是来自项目/全局
-配置的持久权限规则，只喂给 shell 工具：
+`createDefaultTools({ rules, webSearch })` 返回 11 个工具；`rules` 是来自
+项目/全局配置的持久权限规则，只喂给 shell 工具；`webSearch` 为 `web_search`
+装上后端（07 篇）：
 
 | 工具 | 审批 | 默认超时 | 一句话 |
 | --- | --- | --- | --- |
@@ -39,6 +40,8 @@
 | `glob` | 无 | 30s | 按路径模式找文件 |
 | `grep` | 无 | 30s | 按正则搜内容 |
 | `shell` | deny → allow → 只读白名单 → approver | 305s（工具自带） | 执行 shell 命令（权限链 + 进程树管理） |
+| `web_fetch` | 公网 URL 免审批；私网/回环 → approver | 20s（工具自带） | 抓取 URL，HTML 转文本（不执行 JS） |
+| `web_search` | 无（调用配置好的搜索 API） | 20s（工具自带） | 经配置的后端搜索（07 篇） |
 
 ## 2. calculator（calculator.ts）
 
@@ -174,7 +177,38 @@ stat 失败则省略，不整体失败）。空目录占位。
   `[output truncated; only the tail is shown]`。
 - 非零退出码、超时、abort 都抛错并附已捕获输出——模型据此能读失败现场。
 
-## 9. 新增工具检查单（AGENTS.md 硬性要求）
+## 9. web（web.ts）：web_fetch / web_search
+
+**web_fetch** 刻意保持客户端实现（路线图第 2 项）：与 provider 无关、
+可离线测试、可审批。就是一次全局 `fetch` 的 GET：
+
+- **上限**：20s 超时（经 `AbortSignal.any` 与 `ctx.signal` 合并）、2MB
+  **增量**下载上限（流式中途放弃，绝不整体下完再量）、20,000 字符的内容
+  上限加截断标记。重定向按平台默认跳数跟随；展示任何内容之前，**最终**
+  URL 要重新过一遍下面的私网门禁。
+- **content-type 门禁**：`text/*`、`application/json`、`application/xml`、
+  `application/xhtml+xml`；其余（二进制载荷）直接拒绝。HTML 走一段最小
+  转换：注释与 `script`/`style`/`noscript`/`template` 子树整块删除，块级
+  标签变成换行，其余标签剥掉，命名 + 数字实体解码，空白折叠。从不渲染、
+  从不执行 JavaScript。JSON 原样透传。
+- **内网门禁（同意，不是遏制——04 篇）**：一个能抓 URL 的工具离用户的
+  网络只有一次调用之遥。`isPrivateHost` 对主机名字面量分类——
+  `localhost`/`*.localhost`/`*.local`，IPv4 `0/8`、`10/8`、`127/8`、
+  `172.16/12`、`192.168/16`、`169.254/16`，IPv6 `::1`、`::`、`::ffff:`
+  映射的 IPv4、`fc00::/7`、`fe80::/10`——发往其中任何一个都要过
+  `ctx.approve`（没有 approver 时默认拒绝）。批准一个主机不等于批准重定向
+  落到的*另一个*私网主机：对 `127.0.0.1` 的批准不覆盖 `localhost`。
+
+**web_search** 是配置所选搜索 API 的薄客户端：`brave`（GET
+`api.search.brave.com`，`x-api-key` 头）、`exa`（POST `api.exa.ai/search`）、
+`perplexity`（POST `api.perplexity.ai/chat/completions`，答案 + 引用）。
+后端来自配置（07 篇）；未配置时工具会把配置方法讲清楚，而不是无声失败。
+结果格式化为 `[n] 标题 — url` 加摘要，上限与 `web_fetch` 一致。provider
+原生的服务端 web 工具（DeepSeek / Anthropic / OpenRouter `:online`）是
+另一套、更晚的机制——它依赖路线图第 3 项的按 provider 协议工作和 3.2 的
+content block。
+
+## 10. 新增工具检查单（AGENTS.md 硬性要求）
 
 1. **审批评审**：有副作用的工具加入 `createDefaultTools()` 前先评审它的
    审批行为；某个调用需要用户同意时，`execute` 里按调用逐次检查并调

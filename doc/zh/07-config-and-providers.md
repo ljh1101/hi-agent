@@ -10,7 +10,7 @@
 
 | 文件 | 内容 | 权限 | 是否提交 |
 | --- | --- | --- | --- |
-| 全局 `config.json` | API key + 个人默认值 | 首次写入后 `chmod 0600` | 绝不 |
+| 全局 `config.json` | API key、个人默认值、`webSearch` 后端（同样是密钥） | 首次写入后 `chmod 0600` | 绝不 |
 | 项目 `<root>/hi-agent.json` | 无密默认值（baseURL、model、permissions、contextWindow） | 普通文件 | 随仓库共享 |
 
 ### 位置
@@ -50,6 +50,10 @@ CLI flags > 环境变量 > 项目 hi-agent.json > 全局 config.json
     global → DeepSeek/OpenAI 默认；
   - `contextWindow`: project → global（须为正数；undefined = 自动压缩
     禁用）。只在文件层提供，CLI/env 不透传它。
+  - `webSearch`：env（`WEB_SEARCH_PROVIDER` **和** `WEB_SEARCH_API_KEY`，
+    必须成对）→ project → global。存在但无效的段（provider 名字不认识、
+    key 为空）启动即抛错；project 段整体取代 global 段——不会出现
+    "project 的 provider 配 global 的 key"这种拼装。
 - **解析即校验**：JSON 语法错、根不是对象，直接抛带文件路径的错误——
   坏配置要在启动时炸，不能运行中静默走默认。`permissions` 字段在解析时
   就过 `parseRules`（无效条目丢弃，04 篇）。
@@ -133,3 +137,11 @@ cli.ts 的 `pickModel` 用它做实时模型发现，失败回落手输。
 
 `permissions` 的语义与合并规则见 04 篇 §3；`contextWindow` 私有部署时
 在此手动设定（models.dev 查不到的模型）。
+
+`webSearch` 配置 `web_search` 的后端，因为带 key 应放在**全局**配置里：
+
+```json
+{ "webSearch": { "provider": "brave", "apiKey": "..." } }
+```
+
+可选 provider：`brave`、`exa`、`perplexity`（05 篇 §9）。

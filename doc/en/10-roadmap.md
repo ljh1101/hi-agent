@@ -23,44 +23,6 @@ inline; nothing else is ordered.
 
 ## P1 — next up
 
-### 2. Web access: `web_fetch`, then `web_search`
-
-**Problem.** hi-agent is fully offline: anything needing current
-information — docs, package registries, APIs — fails. This is the largest
-capability gap against both reference projects. (dsh ships `web_fetch` /
-`web_search` with pluggable backends: DeepSeek search, Exa, Perplexity,
-plain HTTP; pi leaves it to extensions.)
-
-**Sketch.** `web_fetch`: GET over global `fetch` with timeout, redirect
-cap and size cap; content-type gate (`text/*`, `application/json`); a
-minimal HTML-to-text pass (drop `script`/`style`, decode entities — full
-markdown conversion is not a v1 requirement); truncation consistent with
-the other tools. It never executes JS. Requests to loopback/private
-addresses go through the approver: a tool that fetches
-`http://localhost:…` is a door into the intranet. Whatever the provider,
-`web_fetch` stays a client-side implementation: provider-independent,
-offline-testable, approvable — and fetching a user-given URL is a need
-no search backend covers.
-
-`web_search` lands after `web_fetch`, with two backend classes. The
-default one is a thin client for a config-chosen search API (Brave /
-Exa / Perplexity), i.e. a fetch of a search API. The second class is the
-provider's native server-side web tool — DeepSeek's native web search
-(Anthropic-style tool declaration), Anthropic's `web_search` /
-`web_fetch` server tools, OpenRouter's `:online` suffix. These are not
-standard OpenAI Chat Completions fields: they are reachable only through
-the per-provider protocol work of item 3, and their results arrive as
-content blocks (`server_tool_use`, citations) that only 3.2's message
-model can carry. They complement the client-side tools rather than
-replace them — provider-tied and billed per call, where the client-side
-tools work against every endpoint.
-
-**Lands in.** `src/tools/web.ts` (new), `config.ts` (search backend key),
-`prompts/system.ts` (tool snippets).
-
-**Guardrails.** Doc 05's new-tool checklist applies; the approval behavior
-must be reviewed like any side effect (see the maintenance decision below).
-
 ### 3. Reasoning content, content blocks, native providers
 
 **Problem.** `ChatMessage` is text-only. OpenAI-compatible reasoning
@@ -325,3 +287,8 @@ default:
   default, `serial` for the mutating `write_file`/`edit`/`shell`), and
   observations are appended in `tool_calls` order so the history stays
   replayable and journal order equals execution order (doc 01).
+- Web access (item 2) — `web_fetch` first: a client-side GET with timeout,
+  download/content caps, a content-type gate, a minimal HTML-to-text pass,
+  and approval for private/loopback targets (doc 05 §9). Then `web_search`
+  as a thin client for a config-chosen API (Brave / Exa / Perplexity, doc
+  07); the provider-native server-side web tools remain deferred to item 3.

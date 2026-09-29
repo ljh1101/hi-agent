@@ -788,7 +788,7 @@ async function main(): Promise<void> {
       baseURL: config.baseURL,
       model: config.model,
     }),
-    tools: createDefaultTools({ rules }),
+    tools: createDefaultTools({ rules, webSearch: config.webSearch }),
     root,
     maxSteps: options.maxSteps ?? 12,
     systemPrompt: options.systemPrompt,

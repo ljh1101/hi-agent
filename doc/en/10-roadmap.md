@@ -23,22 +23,6 @@ inline; nothing else is ordered.
 
 ## P1 — next up
 
-### 4. Session fork (then a branch tree)
-
-**Problem.** Sessions can only be switched, not split: one wrong direction
-poisons the rest of the file. (pi has `/tree`, `/fork`, `/clone` with
-edit-and-resubmit; dsh forks at turn boundaries.)
-
-**Sketch.** `/fork [n]` first: write a new session file containing a
-header plus a full-history snapshot line of the current history up to
-turn `n`. The compaction snapshot already defines exactly this line
-format, so replay needs no new code path. A real branch tree (parent
-pointers per line, `/tree` navigation, edit-and-resubmit) is a later,
-separate change; note that compaction already keeps pre-snapshot lines on
-disk, which is what a future tree will need.
-
-**Lands in.** `session.ts`, `cli.ts`.
-
 ### 5. Custom slash commands (prompt templates)
 
 **Problem.** The slash commands are hard-coded in `cli.ts`; users cannot
@@ -267,6 +251,11 @@ default:
   by `textOfContent` wherever only text can go; (3.3) native adapters
   `llm-anthropic.ts` and `llm-google.ts` implement the same `LLM` interface,
   selected by a `protocol` field on the provider preset (doc 02).
+- Session fork (item 4) — `/fork [n]` writes a new session file (header plus
+  one full-history snapshot line, the exact format compaction already uses)
+  holding the conversation up to the end of the `n`-th user turn, and the
+  REPL continues there; the source file is untouched (doc 06 §6). A real
+  branch tree stays a later, separate change.
 - Web access (item 2) — `web_fetch` first: a client-side GET with timeout,
   download/content caps, a content-type gate, a minimal HTML-to-text pass,
   and approval for private/loopback targets (doc 05 §9). Then `web_search`

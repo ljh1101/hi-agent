@@ -48,7 +48,7 @@ StreamingLLM 的 `chat` 会抛错，防止意外走错分支。
 | `config.test.ts` | 17 | 分层优先级、DeepSeek 触发条件、坏配置抛错、0600、provider 预设、listModels、窗口查询（精确匹配/失败吞掉） |
 | `search.test.ts` | 16 | glob 语法、grep 行格式/include/二进制跳过/context、根边界、.gitignore、符号链接不跟随、遍历中目录消失 |
 | `tools.test.ts` | 11 | 读写回环、list_dir、越界拒绝（含**根内链接逃逸**）、空文件/目录占位、行区间与校验 |
-| `session.test.ts` | 11 | 回环、撕裂尾行、快照回放（旧行留盘）、**乱序 append 仍有序 + flush**、二次快照取代、列表元数据、id 唯一可排序、agent hook 触发 |
+| `session.test.ts` | 14 | 回环、撕裂尾行、快照回放（旧行留盘）、**乱序 append 仍有序 + flush**、二次快照取代、列表元数据、id 唯一可排序、agent hook 触发、`/fork`（按 turn 边界切不拆调用与结果、header+快照文件原样回放、源文件不动） |
 | `edit.test.ts` | 10 | 唯一匹配、0/多次拒绝、文件其余不动、根边界、CRLF 文件多行匹配、EOL 保留、尾换行与 mismatch 提示 |
 | `permissions.test.ts` | 9 | 前缀匹配、deny 胜 allow、全子命令过才 allow、裸 & 切分、宽容解析、前缀派生、shell 工具与规则的接线（allow 免问、**deny 压过审批器**、复合命令走私不了） |
 | `calculator.test.ts` | 7 | 优先级、一元/右结合幂、函数常量、大小写与空白、畸形输入拒绝、工具层校验 |

@@ -45,9 +45,11 @@ export { GoogleLLM, type GoogleOptions } from './llm-google.ts'
 export {
   appendCompaction,
   appendMessage,
+  createForkSession,
   createSession,
   deleteSession,
   flushSessions,
+  historyUpToTurn,
   listSessions,
   loadSession,
   newSessionId,

@@ -5,9 +5,11 @@ import { after, test } from 'node:test'
 import {
   appendCompaction,
   appendMessage,
+  createForkSession,
   createSession,
   deleteSession,
   flushSessions,
+  historyUpToTurn,
   listSessions,
   loadSession,
   newSessionId,
@@ -217,4 +219,70 @@ test('agent onAppend fires for every appended message, onReplace on compaction',
   assert.equal(appended.length, 4)
   assert.deepEqual(appended.map((m) => m.role), ['user', 'assistant', 'tool', 'assistant'])
   assert.equal(replaced, undefined, 'no compaction happened')
+})
+
+// ---------------------------------------------------------------------------
+// Session fork (/fork [n], roadmap item 4)
+// ---------------------------------------------------------------------------
+
+const forkHistory: ChatMessage[] = [
+  { role: 'system', content: 'sys' },
+  { role: 'user', content: 'turn 1' },
+  { role: 'assistant', content: 'a1', tool_calls: [{ id: 'c1', name: 'x', arguments: '{}' }] },
+  { role: 'tool', content: 'r1', tool_call_id: 'c1', name: 'x' },
+  { role: 'assistant', content: 'done 1' },
+  { role: 'user', content: 'turn 2' },
+  { role: 'assistant', content: 'done 2' },
+]
+
+test('historyUpToTurn cuts at the end of the nth user turn, never splitting a result', () => {
+  const one = historyUpToTurn(forkHistory, 1)
+  assert.deepEqual(one.map((m) => m.role), ['system', 'user', 'assistant', 'tool', 'assistant'])
+
+  const two = historyUpToTurn(forkHistory, 2)
+  assert.equal(two.length, forkHistory.length)
+
+  // More turns than exist: the whole history is kept.
+  assert.equal(historyUpToTurn(forkHistory, 9).length, forkHistory.length)
+  // Invalid input returns the whole history; the CLI validates before calling.
+  assert.equal(historyUpToTurn(forkHistory, 0).length, forkHistory.length)
+})
+
+test('createForkSession writes header + snapshot that loadSession replays untouched', async () => {
+  const dir = await makeConfigDir()
+  const sliced = historyUpToTurn(forkHistory, 1)
+  const forkId = await createForkSession(dir, 'm', sliced)
+
+  const loaded = await loadSession(dir, forkId)
+  assert.ok(loaded)
+  assert.equal(loaded!.header.model, 'm')
+  assert.deepEqual(loaded!.history, sliced)
+  // The fork file carries exactly two lines: header + snapshot.
+  const text = await readFile(path.join(sessionsDir(dir), `${forkId}.jsonl`), 'utf8')
+  assert.equal(text.trim().split('\n').length, 2)
+
+  // New turns appended to the fork continue after the snapshot.
+  await appendMessage(dir, forkId, { role: 'user', content: 'the wrong direction' })
+  await flushSessions()
+  const resumed = await loadSession(dir, forkId)
+  assert.equal(resumed!.history.at(-1)!.content, 'the wrong direction')
+})
+
+test('forking does not touch the source session file', async () => {
+  const dir = await makeConfigDir()
+  const sourceId = newSessionId()
+  await createSession(dir, sourceId, 'm')
+  await appendMessage(dir, sourceId, { role: 'user', content: 'turn 1' })
+  await appendMessage(dir, sourceId, { role: 'assistant', content: 'a1' })
+  await flushSessions()
+
+  const forkId = await createForkSession(dir, 'm', historyUpToTurn(forkHistory, 1))
+  assert.notEqual(forkId, sourceId)
+
+  const metas = await listSessions(dir)
+  assert.equal(metas.length, 2, 'both sessions exist')
+  const source = metas.find((meta) => meta.id === sourceId)!
+  const fork = metas.find((meta) => meta.id === forkId)!
+  assert.equal(source.messageCount, 2, 'source keeps its own lines')
+  assert.equal(fork.messageCount, historyUpToTurn(forkHistory, 1).length, 'fork counts from its snapshot')
 })

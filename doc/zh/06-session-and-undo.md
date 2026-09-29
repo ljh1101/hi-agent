@@ -150,3 +150,24 @@ CLI 里这些调用是 fire-and-forget，但拒绝不能成为 unhandled rejecti
 | `/undo` 且 rewound | 追加一行 `compaction`（快照 = 截断后 history） |
 | `/undo` 且 !rewound | 无磁盘动作（对话没变，文件变更本来就未持久化追踪） |
 | `/session new` / 切换 | 无（原文件保留；新 turn 懒创建新文件） |
+| `/fork [n]` | 一次性写出**新**文件（header + 一条快照行）；源文件不动；此后 CLI 把新 turn 追加到 fork |
+
+## 6. 会话 fork（`/fork [n]`）—— 路线图第 4 项
+
+会话过去只能切换、不能分叉：一次走错方向就污染整个文件。`/fork [n]` 把
+截至第 `n` 个 user turn 结束（省略 `n` 则全部）的对话复制进一个**新**会话
+文件并从那里继续；源文件从不修改。
+
+机制刻意朴素：
+
+- `historyUpToTurn(history, n)`（session.ts）负责切：一个 turn 是一条 user
+  消息加它之后的一切，所以切点绝不会把 tool 结果和它的调用分开；system
+  消息始终跟随；要求的 turn 数超过实有时保留全部。CLI 在调用前校验
+  `n >= 1`。
+- `createForkSession(configDir, model, history)` 写出 header + 一条全量
+  history 快照行——与 compaction 用的行格式完全一致，`loadSession` 回放
+  fork 不需要任何新代码路径（真正带每行 parent 指针的分支树是之后另一个
+  独立变更；compaction 本来就把快照前的行留在磁盘上，这正是未来分支树
+  需要的）。
+- REPL 把 `store.id` 切到 fork id：后续 turn 追加到 fork。内存中的对话
+  不变——fork 是复制，不是回卷。

@@ -67,9 +67,10 @@ See `hi-agent --list-providers` for the preset endpoints and
 `/model` lists the provider's live models and switches on the spot (your
 conversation is kept), and `/model <id>` jumps straight to a model by name.
 Sessions persist to JSONL files: `--continue`/`--resume` restore one at
-startup and `/session` lists or switches; `/reset` clears history,
-`/compact` summarizes old history, and `/undo` reverts the last turn's file
-changes. Ctrl+C cancels the turn in flight; twice (or at the prompt) quits.
+startup and `/session` lists or switches; `/fork [n]` copies the conversation
+up to turn `n` into a new session and continues there; `/reset` clears
+history, `/compact` summarizes old history, and `/undo` reverts the last
+turn's file changes. Ctrl+C cancels the turn in flight; twice (or at the prompt) quits.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |

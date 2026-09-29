@@ -17,8 +17,10 @@ import { splitSubcommands } from './command-parse.ts'
 import {
   appendCompaction,
   appendMessage,
+  createForkSession,
   createSession,
   flushSessions,
+  historyUpToTurn,
   listSessions,
   loadSession,
   newSessionId,
@@ -75,9 +77,10 @@ hi-agent.json next to --root for shareable, secret-free defaults
 (baseUrl/model) that get committed with the repo.
 
 In-session commands: /reset clears history, /model switches model (or /model <id>),
-/compact summarizes old history, /session lists or switches sessions, /undo puts
-back what the last turn changed, exit or quit leaves. Ctrl+C cancels the turn in
-flight; twice (or at the prompt) quits.
+/compact summarizes old history, /session lists or switches sessions, /fork [n]
+copies the conversation up to turn n into a new session and continues there,
+/undo puts back what the last turn changed, exit or quit leaves. Ctrl+C cancels
+the turn in flight; twice (or at the prompt) quits.
 
 Examples:
   hi-agent "What time is it, and what is 23 * 17?"
@@ -387,7 +390,7 @@ async function repl(session: SessionConfig & { yes?: boolean; store?: SessionSto
   process.on('SIGINT', onInterrupt)
 
   console.log(
-    'hi-agent interactive mode. Commands: /reset, /model, /session, /compact, /undo, exit. Ctrl+C interrupts a turn (twice to quit).',
+    'hi-agent interactive mode. Commands: /reset, /model, /session, /fork [n], /compact, /undo, exit. Ctrl+C interrupts a turn (twice to quit).',
   )
   try {
     for (;;) {
@@ -424,6 +427,36 @@ async function repl(session: SessionConfig & { yes?: boolean; store?: SessionSto
       }
       if (input === '/undo') {
         await undoLastTurn(agent)
+        continue
+      }
+      if (input === '/fork' || input.startsWith('/fork ')) {
+        const arg = input.slice('/fork'.length).trim()
+        let turns: number | undefined
+        if (arg !== '') {
+          const value = Number(arg)
+          if (!Number.isInteger(value) || value < 1) {
+            console.log(color(RED, '/fork takes an optional turn number >= 1 (a turn is one user message and everything after it).'))
+            continue
+          }
+          turns = value
+        }
+        try {
+          await ensureSession()
+          const total = agent.history.length
+          const sliced = turns === undefined ? [...agent.history] : historyUpToTurn(agent.history, turns)
+          const newId = await createForkSession(configDir, session.model, sliced)
+          const source = store.id ?? '(unsaved)'
+          store.id = newId
+          store.createdAt = new Date().toISOString()
+          console.log(
+            color(
+              DIM,
+              `(forked ${source} -> ${newId}: kept ${sliced.length} of ${total} messages; new turns append to the fork)`,
+            ),
+          )
+        } catch (error) {
+          console.error(color(RED, `fork failed: ${error instanceof Error ? error.message : String(error)}`))
+        }
         continue
       }
       try {

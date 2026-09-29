@@ -34,7 +34,7 @@ import，否则 `npm test` 不会跑到它。
 ScriptedLLM 没实现 `stream`，所以天然覆盖"无流式回退 chat"路径；
 StreamingLLM 的 `chat` 会抛错，防止意外走错分支。
 
-## 3. 套件地图（18 个文件，约 280 用例）
+## 3. 套件地图（19 个文件，约 285 用例）
 
 | 文件 | 用例数 | 覆盖点 |
 | --- | --- | --- |
@@ -48,6 +48,7 @@ StreamingLLM 的 `chat` 会抛错，防止意外走错分支。
 | `commands.test.ts` | 7 | 自定义 slash 命令：双目录加载且项目覆盖全局、目录缺失容忍、垃圾文件跳过、每个 `$ARGUMENTS` 都替换、参数保持是数据（`$&` 不被再解释）、无占位符时追加、`/name args` 切分、未知输入拒绝 |
 | `config.test.ts` | 17 | 分层优先级、DeepSeek 触发条件、坏配置抛错、0600、provider 预设、listModels、窗口查询（精确匹配/失败吞掉） |
 | `search.test.ts` | 16 | glob 语法、grep 行格式/include/二进制跳过/context、根边界、.gitignore、符号链接不跟随、遍历中目录消失 |
+| `task.test.ts` | 6 | 子代理：最终答案作为观察（共 3 次模型往返）、默认集拒绝 `write_file`（经子代理自己的答案带回）、审批透传给父级 approver、max_steps 停止原因成为观察、运行中取消 → `Error: the task was cancelled`、600s 工具超时 |
 | `tools.test.ts` | 11 | 读写回环、list_dir、越界拒绝（含**根内链接逃逸**）、空文件/目录占位、行区间与校验 |
 | `session.test.ts` | 14 | 回环、撕裂尾行、快照回放（旧行留盘）、**乱序 append 仍有序 + flush**、二次快照取代、列表元数据、id 唯一可排序、agent hook 触发、`/fork`（按 turn 边界切不拆调用与结果、header+快照文件原样回放、源文件不动） |
 | `edit.test.ts` | 10 | 唯一匹配、0/多次拒绝、文件其余不动、根边界、CRLF 文件多行匹配、EOL 保留、尾换行与 mismatch 提示 |

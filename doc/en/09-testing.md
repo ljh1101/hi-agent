@@ -38,7 +38,7 @@ ScriptedLLM does not implement `stream`, so it naturally covers the
 "no-streaming falls back to chat" path; StreamingLLM's `chat` throws,
 preventing accidental wrong-branch execution.
 
-## 3. Suite map (18 files, ~280 cases)
+## 3. Suite map (19 files, ~285 cases)
 
 | File | Cases | Coverage |
 | --- | --- | --- |
@@ -52,6 +52,7 @@ preventing accidental wrong-branch execution.
 | `commands.test.ts` | 7 | Custom slash commands: two-directory loading with project-over-global precedence, missing directories, junk skipped, every `$ARGUMENTS` replaced, arguments stay data (`$&` not re-interpreted), append-when-no-placeholder, `/name args` splitting, unknown-input rejection |
 | `config.test.ts` | 17 | Layering precedence, DeepSeek trigger conditions, bad config throws, 0600, provider presets, listModels, window lookup (exact match/failures swallowed) |
 | `search.test.ts` | 16 | Glob syntax, grep line formats/include/binary skip/context, root boundary, .gitignore, symlinks not followed, a directory vanishing mid-walk |
+| `task.test.ts` | 6 | The sub-agent: final answer as observation (and 3 model round-trips), default set rejects `write_file` (reported through the sub's own answer), approvals propagate to the parent approver, max_steps stop reason becomes the observation, mid-run cancellation → `Error: the task was cancelled`, the 600s tool timeout |
 | `tools.test.ts` | 11 | Read/write round-trip, list_dir, boundary refusal (including **in-root link escape**), empty file/dir placeholders, line ranges and validation |
 | `session.test.ts` | 14 | Round-trip, torn final line, snapshot replay (old lines stay on disk), **out-of-order appends still land in order + flush**, a second snapshot supersedes, listing metadata, id uniqueness/sortability, agent hooks firing, `/fork` (turn-boundary cut never splits a call from its result, header+snapshot file replays untouched, source file untouched) |
 | `edit.test.ts` | 10 | Unique match, 0/multiple rejections, the rest of the file untouched, root boundary, multi-line match in a CRLF file, EOL preservation, trailing newline and the mismatch hint |

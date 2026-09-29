@@ -32,24 +32,6 @@
 
 **落点。** `cli.ts`、`config.ts`、两份文档树。
 
-### 6. Sub-agent：`task` 工具
-
-**问题。** 所有事都挤在一个上下文里；一次大范围探索会把主线程淹没，
-研究型工作也无法并行。（dsh：subagent 注册表加 send/interrupt 等
-控制工具；pi：官方扩展示例。）
-
-**方案。** 一个 `task` 工具，其 `execute` 派生一个嵌套 `Agent`：拥有
-自己的 history、受限工具集（默认只读）、自己的 `maxSteps`，共享父级
-的 abort signal。最终答案——或 stop reason——成为 observation；
-"工具失败是数据"意味着失败的 sub-agent 是一条 `Error: …` observation，
-不是崩溃。审批沿用到同一个 `ctx.approve`。v1 的子运行不落为会话。
-
-**落点。** `src/tools/task.ts`（新增）。理想情况下 `agent.ts` 零改动：
-sub-agent 就是一个库调用方，这正是 `src/index.ts` 公共出口存在的意义。
-
-**护栏。** sub-agent 内部的写操作除非显式加白，否则 `/undo` 追踪不到
-——默认只读工具集就是为此存在的。
-
 ### 7. MCP 客户端
 
 **问题。** MCP 生态（数据库、浏览器、API）够不着，而逐个手写集成
@@ -223,6 +205,10 @@ shell 的只读白名单，要么空转成摆设。某个调用需要用户同�
   `.hi-agent/commands/<name>.md`（项目）与 `<configDir>/commands/`（全局）；
   `$ARGUMENTS` 替换为键入的参数，展开结果成为一条用户消息。是声明式数据
   而非代码——原则 3 完好；内置命令保持优先（doc 08 §7）。
+- Sub-agent（第 6 项）——`task` 工具以库调用方的方式派生嵌套 `Agent`
+  （`agent.ts` 零改动）：独立 history、默认只读工具集、独立 `maxSteps`、
+  600s 超时、共享父级 abort 信号、审批透传到 `ctx.approve`。最终答案——
+  或停止原因——就是观察；v1 子运行不持久化（doc 05 §10）。
 - Web 访问（第 2 项）——先 `web_fetch`：客户端 GET，带超时、下载/内容
   上限、content-type 门禁、最小 HTML 转文本，私网/回环目标走审批
   （05 篇 §9）。再 `web_search`：配置所选 API（Brave / Exa / Perplexity，

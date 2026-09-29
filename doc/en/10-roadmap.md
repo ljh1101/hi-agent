@@ -23,28 +23,6 @@ inline; nothing else is ordered.
 
 ## P1 — next up
 
-### 6. Sub-agents: the `task` tool
-
-**Problem.** One context carries everything; a broad exploration drowns
-the main thread and there is no way to parallelize research. (dsh: a
-subagent registry plus control tools like send/interrupt; pi: an official
-extension example.)
-
-**Sketch.** A `task` tool whose `execute` spawns a nested `Agent` with its
-own history, a restricted tool set (read-only by default), its own
-`maxSteps`, and the parent's abort signal. The final answer — or the stop
-reason — becomes the observation; "tool failures are data" means a failed
-sub-agent is an `Error: …` observation, not a crash. Approvals propagate
-to the same `ctx.approve`. Sub-runs are not persisted as sessions in v1.
-
-**Lands in.** `src/tools/task.ts` (new). Ideally no change to `agent.ts`:
-a sub-agent is a library caller, which is what the public surface in
-`src/index.ts` exists for.
-
-**Guardrails.** Writes inside a sub-agent are untracked by `/undo` unless
-explicitly allowlisted — the default read-only tool set exists for that
-reason.
-
 ### 7. MCP client
 
 **Problem.** The MCP ecosystem (databases, browsers, APIs) is unreachable,
@@ -245,6 +223,11 @@ default:
   (global); `$ARGUMENTS` is substituted with the typed arguments and the
   expansion becomes a user message. Declarative data, not code — principle 3
   intact; built-ins keep precedence (doc 08 §7).
+- Sub-agents (item 6) — the `task` tool spawns a nested `Agent` as a library
+  caller (zero `agent.ts` changes): own history, read-only default tool set,
+  own `maxSteps`, 600s timeout, the parent's abort signal, approvals passed
+  through to `ctx.approve`. The final answer — or stop reason — is the
+  observation; sub-runs are not persisted in v1 (doc 05 §10).
 - Web access (item 2) — `web_fetch` first: a client-side GET with timeout,
   download/content caps, a content-type gate, a minimal HTML-to-text pass,
   and approval for private/loopback targets (doc 05 §9). Then `web_search`

@@ -1,7 +1,8 @@
 # 05 · 工具集（tools/*）
 
 覆盖文件：`src/tools/registry.ts`、`index.ts`、`calculator.ts`、
-`time.ts`、`filesystem.ts`、`edit.ts`、`search.ts`、`shell.ts`、`web.ts`。
+`time.ts`、`filesystem.ts`、`edit.ts`、`search.ts`、`shell.ts`、`web.ts`、
+`task.ts`。
 
 工具是普通对象：name + description + JSON Schema + `execute`（+ 可选
 `timeoutMs` / `concurrency` / `promptSnippet` / `promptGuidelines`）。没有
@@ -25,9 +26,10 @@
 `definitions()` 投影出 `{ name, description, parameters }`——广告给模型的
 最小集，`execute` 等运行时细节不上线。
 
-`createDefaultTools({ rules, webSearch })` 返回 11 个工具；`rules` 是来自
-项目/全局配置的持久权限规则，只喂给 shell 工具；`webSearch` 为 `web_search`
-装上后端（07 篇）：
+`createDefaultTools({ rules, webSearch, getLLM })` 返回 12 个工具；`rules`
+是来自项目/全局配置的持久权限规则，只喂给 shell 工具；`webSearch` 为
+`web_search` 装上后端（07 篇）；`getLLM` 启用 `task` 子代理工具（其模型
+按调用解析，`/model` 切换对子代理同样生效）：
 
 | 工具 | 审批 | 默认超时 | 一句话 |
 | --- | --- | --- | --- |
@@ -42,6 +44,7 @@
 | `shell` | deny → allow → 只读白名单 → approver | 305s（工具自带） | 执行 shell 命令（权限链 + 进程树管理） |
 | `web_fetch` | 公网 URL 免审批；私网/回环 → approver | 20s（工具自带） | 抓取 URL，HTML 转文本（不执行 JS） |
 | `web_search` | 无（调用配置好的搜索 API） | 20s（工具自带） | 经配置的后端搜索（07 篇） |
+| `task` | 审批透传给父级 | 600s（工具自带） | 子代理：独立上下文 + 只读工具集 |
 
 ## 2. calculator（calculator.ts）
 
@@ -208,7 +211,28 @@ stat 失败则省略，不整体失败）。空目录占位。
 另一套、更晚的机制——它依赖路线图第 3 项的按 provider 协议工作和 3.2 的
 content block。
 
-## 10. 新增工具检查单（AGENTS.md 硬性要求）
+## 10. task（task.ts）：子代理
+
+`execute` 派生一个嵌套 `Agent`——它只是一个库调用方，`agent.ts` 零改动：
+
+- **独立上下文、独立工具集**：子代理的 history 从空开始，prompt 就是任务
+  简报；默认工具是只读集（calculator、current_time、list_dir、read_file、
+  glob、grep）。没有写入方、没有 shell——子代理的写操作父级 `/undo` 日志
+  追踪不到，所以默认干脆不给它写的能力；要给写入工具必须显式传 `tools`，
+  且其变更留在子代理自己的、用完即弃的日志里。
+- **独立步数预算**（`maxSteps`，默认 12）与 600s 工具超时——默认 30s 会
+  杀死真实的子运行。
+- **共享取消与同意**：父级的 abort 信号就是子代理的信号；`ctx.approve`
+  成为子代理的 approver，子代理逃不出同意链。
+- **结果契约**：最终答案 → 观察文本；`max_steps` → RunResult 的
+  "Stopped after N steps..." 文案；取消 → `Error: the task was cancelled`；
+  provider 失败直接抛出，由父级转成 `Error: ...` 观察（"工具失败是数据"）。
+- **无递归**（默认工具集不含 `task` 自身）、**不持久化**（v1 的子运行
+  不落为会话）。
+- LLM 经 `getLLM()` 闭包按调用解析——会话中途 `/model` 切换对子代理
+  同样生效。
+
+## 11. 新增工具检查单（AGENTS.md 硬性要求）
 
 1. **审批评审**：有副作用的工具加入 `createDefaultTools()` 前先评审它的
    审批行为；某个调用需要用户同意时，`execute` 里按调用逐次检查并调

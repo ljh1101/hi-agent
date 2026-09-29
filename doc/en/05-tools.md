@@ -1,7 +1,7 @@
 # 05 · The Tool Set (tools/*)
 
 Covers: `src/tools/registry.ts`, `index.ts`, `calculator.ts`, `time.ts`,
-`filesystem.ts`, `edit.ts`, `search.ts`, `shell.ts`, `web.ts`.
+`filesystem.ts`, `edit.ts`, `search.ts`, `shell.ts`, `web.ts`, `task.ts`.
 
 Tools are plain objects: name + description + JSON Schema + `execute` (plus
 optional `timeoutMs` / `concurrency` / `promptSnippet` / `promptGuidelines`).
@@ -27,9 +27,11 @@ Where a call needs consent the tool calls `ctx.approve` in `execute`.
 set advertised to the model; `execute` and other runtime details stay off
 the wire.
 
-`createDefaultTools({ rules, webSearch })` returns the 11 tools; `rules`
-carries the persistent permission rules from project/global config and feeds
-only the shell tool; `webSearch` arms `web_search` with its backend (doc 07):
+`createDefaultTools({ rules, webSearch, getLLM })` returns the 12 tools;
+`rules` carries the persistent permission rules from project/global config and
+feeds only the shell tool; `webSearch` arms `web_search` with its backend
+(doc 07); `getLLM` enables the `task` sub-agent tool (its model is resolved
+per call, so `/model` swaps apply to sub-agents too):
 
 | Tool | Approval | Default timeout | In one line |
 | --- | --- | --- | --- |
@@ -44,6 +46,7 @@ only the shell tool; `webSearch` arms `web_search` with its backend (doc 07):
 | `shell` | deny → allow → read-only whitelist → approver | 305s (tool-owned) | Run shell commands (permission chain + process-tree management) |
 | `web_fetch` | public URLs free; private/loopback → approver | 20s (tool-owned) | Fetch a URL, HTML → text (no JS execution) |
 | `web_search` | none (calls the configured search API) | 20s (tool-owned) | Web search via the configured backend (doc 07) |
+| `task` | approvals propagate to the parent | 600s (tool-owned) | Sub-agent with its own context and a read-only tool set |
 
 ## 2. calculator (calculator.ts)
 
@@ -250,7 +253,31 @@ server-side web tools (DeepSeek / Anthropic / OpenRouter `:online`) are a
 different, later mechanism — they need roadmap item 3's per-provider protocol
 work and item 3.2's content blocks.
 
-## 10. New-tool checklist (hard requirements from AGENTS.md)
+## 10. task (task.ts): the sub-agent
+
+`execute` spawns a nested `Agent` — a library caller, no `agent.ts` changes:
+
+- **Own context, own tool set**: the sub-agent's history starts empty with the
+  prompt as the brief; its default tools are the read-only set (calculator,
+  current_time, list_dir, read_file, glob, grep). No writers and no shell —
+  sub-agent writes would be untracked by the parent's `/undo` journal, so the
+  default gives them nothing to write with; write-capable sets are an explicit
+  `tools` opt-in whose changes stay in the sub-agent's own throwaway journal.
+- **Own step budget** (`maxSteps`, default 12) and a 600s tool timeout — the
+  30s default would kill real sub-runs.
+- **Shared cancellation and consent**: the parent's abort signal is the
+  sub-agent's signal; `ctx.approve` becomes the sub-agent's approver, so a
+  sub-agent cannot escape the consent chain.
+- **The result contract**: final answer → observation text; `max_steps` →
+  RunResult's "Stopped after N steps..." content; abort → `Error: the task
+  was cancelled`; a provider failure throws and becomes an `Error: ...`
+  observation like any other tool ("tool failures are data").
+- **No recursion** (the default set excludes `task` itself) and **no
+  persistence** (sub-runs never become sessions in v1).
+- The LLM arrives through a `getLLM()` closure resolved per call — a
+  mid-session `/model` swap applies to sub-agents too.
+
+## 11. New-tool checklist (hard requirements from AGENTS.md)
 
 1. **Approval review**: a side-effecting tool has its approval behavior
    reviewed before joining `createDefaultTools()`; where a call needs

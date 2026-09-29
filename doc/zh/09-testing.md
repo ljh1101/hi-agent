@@ -34,10 +34,11 @@ import，否则 `npm test` 不会跑到它。
 ScriptedLLM 没实现 `stream`，所以天然覆盖"无流式回退 chat"路径；
 StreamingLLM 的 `chat` 会抛错，防止意外走错分支。
 
-## 3. 套件地图（19 个文件，约 285 用例）
+## 3. 套件地图（20 个文件，约 290 用例）
 
 | 文件 | 用例数 | 覆盖点 |
 | --- | --- | --- |
+| `mcp.test.ts` | 8 | 对照真实 stdio server（spawn 的 Node 子进程，说 JSON-RPC）测 MCP 客户端：发现并经 `loadSource` 挂载 `mcp__<server>__<tool>`、参数/结果往返、`isError` 与 JSON-RPC 错误即数据、审批门禁（无 approver / 拒绝 / 批准）、**植入的密钥到不了子进程**（仅显式 env 映射）、坏 server 记日志跳过、在途调用可取消 |
 | `native-llm.test.ts` | 8 | 原生适配器离线测试：Anthropic 请求形态（system 提取、`input_schema` 工具、tool_use 转换、tool_result 合并轮）、响应解析（thinking → reasoning、tool_use → toolCalls、usage）、流式 SSE 映射、image block 透传；Gemini 请求形态（`systemInstruction`、`functionCall`/`functionResponse`、合并轮）、thought 部分映射 reasoning、流式映射；`createLLM` 工厂分发 |
 | `reasoning.test.ts` | 8 | `reasoning_content` 在 chat 与 stream 中捕获、投影剥离 reasoning 而 history 保留、token 估算忽略 reasoning 并展平 block、摘要转录展平 block、agent 存储且永不回发 reasoning、流式 reasoning 事件、block + reasoning 的会话往返 |
 | `web.test.ts` | 18 | 私网主机名分类（v4/v6/localhost，排除误报）、HTML→文本（script/style/注释/noscript 删除、实体解码、未知实体原样保留）、JSON 透传、HTTP/content-type/URL 协议错误、增量下载上限、内容截断、**回环审批门禁**（无 approver → 拒绝、拒绝 → 不发请求、批准 → 发出请求、请求文案带 URL）、重定向落到另一个私网主机被拦、超时；`web_search`：无后端时的配置指引、Brave/Exa/Perplexity 请求形态（端点、key 头、POST body）与结果格式化、API 报错 |

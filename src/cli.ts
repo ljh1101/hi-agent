@@ -12,8 +12,9 @@ import {
 import type { HiAgentConfig } from './config.ts'
 import { derivePrefixRule, matchesPrefix, parseRules, type PermissionRules } from './permissions.ts'
 import { findCustomCommand, expandCommandTemplate, loadCustomCommands, type CustomCommand } from './commands.ts'
-import { createLLM, LLMError, type LLMProtocol } from './llm.ts'
+import { LLMError, createLLM, type LLMProtocol } from './llm.ts'
 import type { LLM } from './types.ts'
+import { McpHub } from './mcp.ts'
 import { listModels, lookupContextWindow, PROVIDERS } from './providers.ts'
 import { splitSubcommands } from './command-parse.ts'
 import {
@@ -28,7 +29,7 @@ import {
   newSessionId,
   type SessionMeta,
 } from './session.ts'
-import { createDefaultTools } from './tools/index.ts'
+import { createDefaultTools, ToolRegistry } from './tools/index.ts'
 import type { AgentEvent, ChatMessage } from './types.ts'
 
 interface CliOptions {
@@ -875,27 +876,45 @@ async function main(): Promise<void> {
     }),
   }
 
-  const agent = new Agent({
-    llm: llmRef.current,
-    tools: createDefaultTools({ rules, webSearch: config.webSearch, getLLM: () => llmRef.current }),
-    root,
-    maxSteps: options.maxSteps ?? 12,
-    systemPrompt: options.systemPrompt,
-    stream: options.stream,
-    ...(config.contextWindow ? { compaction: { contextWindow: config.contextWindow } } : {}),
-    onEvent: (event) => renderEvent(event, verbose),
-  })
+  // MCP servers (roadmap item 7): discovered tools mount as
+  // mcp__<server>__<tool>. A server that fails to start is logged and
+  // skipped; the hub is closed on every exit path so no child outlives us.
+  let mcpHub: McpHub | undefined
+  try {
+    if (Object.keys(config.mcpServers).length > 0) {
+      mcpHub = new McpHub(config.mcpServers, {
+        log: (message) => console.log(color(DIM, `[mcp] ${message}`)),
+      })
+      await mcpHub.connect()
+    }
+    // Discovery must finish BEFORE the agent is constructed: the system
+    // prompt's tools section is built from the registry at construction.
+    const registry = new ToolRegistry(
+      createDefaultTools({ rules, webSearch: config.webSearch, getLLM: () => llmRef.current }),
+    )
+    if (mcpHub) await registry.loadSource(mcpHub)
 
-  if (resumeHistory) {
-    agent.restoreHistory(resumeHistory)
-  }
+    const agent = new Agent({
+      llm: llmRef.current,
+      tools: registry.list(),
+      root,
+      maxSteps: options.maxSteps ?? 12,
+      systemPrompt: options.systemPrompt,
+      stream: options.stream,
+      ...(config.contextWindow ? { compaction: { contextWindow: config.contextWindow } } : {}),
+      onEvent: (event) => renderEvent(event, verbose),
+    })
 
-  if (options.yes) {
-    // Auto-approve everything (--yes): for trusted containers/CI only.
-    agent.setApprover(async () => true)
-  }
+    if (resumeHistory) {
+      agent.restoreHistory(resumeHistory)
+    }
 
-  if (options.prompt !== undefined) {
+    if (options.yes) {
+      // Auto-approve everything (--yes): for trusted containers/CI only.
+      agent.setApprover(async () => true)
+    }
+
+    if (options.prompt !== undefined) {
     // One turn, but Ctrl+C should still stop it cleanly rather than kill the
     // process mid-write: the shell tool kills its process tree on abort, and the
     // turn ends as "aborted" instead of a stack trace.
@@ -914,34 +933,37 @@ async function main(): Promise<void> {
       } finally {
         rl.close()
       }
+        return
+      }
+      try {
+        const result = await agent.run(options.prompt, { signal: run.signal })
+        if (result.stopReason !== 'final') process.exitCode = 1
+      } catch (error) {
+        printError(error)
+        process.exitCode = 1
+      }
       return
     }
-    try {
-      const result = await agent.run(options.prompt, { signal: run.signal })
-      if (result.stopReason !== 'final') process.exitCode = 1
-    } catch (error) {
-      printError(error)
-      process.exitCode = 1
-    }
-    return
-  }
 
-  await repl({
-    agent,
-    verbose,
-    baseURL: config.baseURL,
-    apiKey: config.apiKey,
-    model: config.model,
-    protocol: config.protocol,
-    root,
-    llmRef,
-    yes: options.yes,
-    customCommands,
-    // A resumed session keeps appending to its original file.
-    store: resumeSessionId
-      ? { id: resumeSessionId, createdAt: undefined, on: true }
-      : undefined,
-  })
+    await repl({
+      agent,
+      verbose,
+      baseURL: config.baseURL,
+      apiKey: config.apiKey,
+      model: config.model,
+      protocol: config.protocol,
+      root,
+      llmRef,
+      yes: options.yes,
+      customCommands,
+      // A resumed session keeps appending to its original file.
+      store: resumeSessionId
+        ? { id: resumeSessionId, createdAt: undefined, on: true }
+        : undefined,
+    })
+  } finally {
+    mcpHub?.close()
+  }
 }
 
 /** Merge project and global permission rules; project wins on conflict. */

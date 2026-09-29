@@ -2,7 +2,7 @@
 
 覆盖文件：`src/tools/registry.ts`、`index.ts`、`calculator.ts`、
 `time.ts`、`filesystem.ts`、`edit.ts`、`search.ts`、`shell.ts`、`web.ts`、
-`task.ts`。
+`task.ts`，以及 `src/mcp.ts` 里的 MCP 工具源。
 
 工具是普通对象：name + description + JSON Schema + `execute`（+ 可选
 `timeoutMs` / `concurrency` / `promptSnippet` / `promptGuidelines`）。没有
@@ -25,6 +25,11 @@
 `ToolRegistry`：name → Tool 的 Map。重名注册抛错（duplicate tool name）。
 `definitions()` 投影出 `{ name, description, parameters }`——广告给模型的
 最小集，`execute` 等运行时细节不上线。
+
+静态 Map 之外的一个接缝（路线图第 7 项）：`ToolSource`——任何带
+`list(): Promise<Tool[]>` 的东西。`registry.loadSource(source)` 注册源提供的
+工具（重名跳过：内置优先）。发现是异步的，所以 CLI 要在构造 Agent **之前**
+await `loadSource`——系统提示词的工具段在构造时从注册表生成。
 
 `createDefaultTools({ rules, webSearch, getLLM })` 返回 12 个工具；`rules`
 是来自项目/全局配置的持久权限规则，只喂给 shell 工具；`webSearch` 为
@@ -232,7 +237,29 @@ content block。
 - LLM 经 `getLLM()` 闭包按调用解析——会话中途 `/model` 切换对子代理
   同样生效。
 
-## 11. 新增工具检查单（AGENTS.md 硬性要求）
+## 11. mcp（mcp.ts）：stdio 上的 MCP 客户端
+
+stdio 上的 MCP 就是 agent 与子进程之间的换行分隔 JSON-RPC——手写实现，
+无 SDK、无运行时依赖、无动态 import：
+
+- **`McpClient`** spawn 配置的 `command`（+ args + 显式 `env`），跑完
+  `initialize` 握手与 `notifications/initialized`，然后按 id 匹配请求与
+  响应地服务 `tools/list` 与 `tools/call`。超时按请求计（发现 10s、调用
+  120s）；调用接受调用方的 `AbortSignal`。server 崩溃或写失败会让所有
+  在途请求失败，诊断里带 stderr 尾部。
+- **`McpHub`** 每个配置的 server 持有一个 client，本身就是 `ToolSource`：
+  发现的工具包装成 `mcp__<server>__<tool>`（serial 并发——第三方代码绝不
+  并发两跑）。启动失败的 server 记日志跳过；一个坏 server 不能拖垮整个
+  工具集。CLI 在每条退出路径上关闭 hub，与 `flushSessions()` 并列。
+- **信任与同意**（04 篇 §7b）：除非工具在 server 配置的 `allow` 名单里，
+  每次调用都要 `ctx.approve`；没有 approver 就拒绝。子进程环境是 OS 查找
+  名字加显式配置映射。
+- **失败是数据**：`isError` 结果、JSON-RPC 错误、崩溃、超时、取消全部
+  抛出——agent 像对待其他工具一样转成 `Error: ...` 观察。
+- 结果里的非文本内容以 `[non-text content: <type>]` 占位符呈现；text 部分
+  以换行连接。
+
+## 12. 新增工具检查单（AGENTS.md 硬性要求）
 
 1. **审批评审**：有副作用的工具加入 `createDefaultTools()` 前先评审它的
    审批行为；某个调用需要用户同意时，`execute` 里按调用逐次检查并调

@@ -38,10 +38,11 @@ ScriptedLLM does not implement `stream`, so it naturally covers the
 "no-streaming falls back to chat" path; StreamingLLM's `chat` throws,
 preventing accidental wrong-branch execution.
 
-## 3. Suite map (19 files, ~285 cases)
+## 3. Suite map (20 files, ~290 cases)
 
 | File | Cases | Coverage |
 | --- | --- | --- |
+| `mcp.test.ts` | 8 | The MCP client against a real stdio server (a spawned Node child speaking JSON-RPC): discovery mounting `mcp__<server>__<tool>` via `loadSource`, argument/result round trip, `isError` and JSON-RPC errors as data, the approval gate (no approver / denial / approval), **a planted secret never reaches the child** (explicit env map only), a broken server logged and skipped, cancellation of an in-flight call |
 | `native-llm.test.ts` | 8 | Native adapters offline: Anthropic request shape (system extraction, `input_schema` tools, tool_use conversion, merged tool_result turns), reply parsing (thinking → reasoning, tool_use → toolCalls, usage), streaming SSE mapping, image-block pass-through; Gemini request shape (`systemInstruction`, `functionCall`/`functionResponse`, merged turns), thought-part reasoning, streaming mapping; `createLLM` factory dispatch |
 | `reasoning.test.ts` | 8 | `reasoning_content` captured in chat and stream, projection strips reasoning while history keeps it, token estimate ignores reasoning and flattens blocks, summary transcript flattens blocks, agent stores reasoning and never resends it, streaming reasoning events, session round-trip of blocks + reasoning |
 | `web.test.ts` | 18 | Private-host classification (v4/v6/localhost, false positives excluded), HTML→text (script/style/comments/noscript dropped, entities decoded, unknown entities untouched), JSON passthrough, HTTP/content-type/URL-scheme errors, the incremental download cap, content truncation, **the loopback approval gate** (no approver → refuse, denial → nothing fetched, approval → fetch proceeds, request text carries the URL), a redirect landing on a different private host blocked, timeout; `web_search`: the no-backend guidance, Brave/Exa/Perplexity request shapes (endpoint, key header, POST body) and result formatting, API errors |

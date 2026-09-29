@@ -21,31 +21,7 @@ Every item here must pass the same three tests:
 Items are grouped by priority, not size. Dependencies are called out
 inline; nothing else is ordered.
 
-## P1 — next up
-
-### 7. MCP client
-
-**Problem.** The MCP ecosystem (databases, browsers, APIs) is unreachable,
-and hand-writing every integration contradicts the minimal core. (dsh
-mounts external MCP servers as native tools; pi deliberately has none —
-which makes this a differentiator, not cargo-culting.)
-
-**Sketch.** stdio transport only. MCP over stdio is newline-delimited
-JSON-RPC between the agent and a child process — the process management
-`shell.ts` already does, with no SDK, no runtime dependency, and none of
-the dynamic imports AGENTS.md forbids. `mcpServers` in config declares
-command, args, and an explicit env map (never `process.env` — same rule as
-`childEnv()`). Discovered tools are exposed as `mcp__<server>__<tool>` via
-a dynamic tool source; `tools/registry.ts` (static today) gains exactly
-one concept: a registry that can also ask a source for its tools. MCP
-tool failures normalize into observations like any other tool.
-
-**Lands in.** `src/mcp.ts` (new), `tools/registry.ts`, `config.ts`.
-
-**Guardrails.** An MCP server is arbitrary third-party code running with
-user rights — the same trust class as the shell. Every MCP tool call
-requires approval unless allow-listed in config, and the docs say so
-plainly.
+## P1 — fully shipped (see "Shipped" below)
 
 ## P2 — after P1
 
@@ -228,6 +204,12 @@ default:
   own `maxSteps`, 600s timeout, the parent's abort signal, approvals passed
   through to `ctx.approve`. The final answer — or stop reason — is the
   observation; sub-runs are not persisted in v1 (doc 05 §10).
+- MCP client (item 7) — hand-written newline-delimited JSON-RPC over stdio
+  (no SDK, no runtime dependency, no dynamic imports); `mcpServers` config
+  with an explicit env map; discovered tools mount as `mcp__<server>__<tool>`
+  through the registry's one new concept, a `ToolSource`; every call requires
+  approval unless allow-listed, and the trust model is documented plainly
+  (doc 04 §7b, doc 05 §11).
 - Web access (item 2) — `web_fetch` first: a client-side GET with timeout,
   download/content caps, a content-type gate, a minimal HTML-to-text pass,
   and approval for private/loopback targets (doc 05 §9). Then `web_search`

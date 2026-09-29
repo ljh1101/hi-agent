@@ -61,6 +61,11 @@ Within the environment, `AGENT_*` outranks `OPENAI_*` / `DEEPSEEK_*`.
     invalid (unknown provider, empty key) throws at startup; a project
     section displaces the global one wholesale — no mixing a project provider
     with a global key.
+  - `mcpServers`: merged per server name, project over global. Each entry
+    needs a non-empty `command` (startup throws otherwise); `args`, an
+    explicit `env` map, and an `allow` list of tool names exempt from the
+    per-call approval are optional. A server that fails to start is logged
+    and skipped at runtime (doc 05 §11, trust model doc 04 §7b).
 - **Parse-time validation**: a JSON syntax error or a non-object root throws
   immediately with the file path — bad config must explode at startup, not
   silently fall back mid-run. The `permissions` field goes through
@@ -164,3 +169,20 @@ config, because it carries a key:
 ```
 
 Providers: `brave`, `exa`, `perplexity` (doc 05 §9).
+
+`mcpServers` mounts MCP servers (stdio). The `env` map is explicit — put
+secrets here, never rely on the parent process environment:
+
+```json
+{
+  "mcpServers": {
+    "fs": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "allow": ["list_directory", "read_file"]
+    }
+  }
+}
+```
+
+Tools outside `allow` ask for approval on every call (doc 04 §7b).

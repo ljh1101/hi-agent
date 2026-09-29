@@ -16,42 +16,7 @@
 
 条目按优先级分组，不按体量。依赖关系在条目内注明；除此之外不排顺序。
 
-## P1 — 接下来做
-
-### 5. 自定义 slash 命令（prompt 模板）
-
-**问题。** slash 命令硬编码在 `cli.ts`；用户无法添加自己的可复用
-提示词。（pi：注册命令 + markdown prompt 模板；dsh：命令注册表，
-不经模型回合直接分发。）
-
-**方案。** `.hi-agent/commands/<name>.md`（项目）与
-`<configDir>/commands/`（全局）。文件正文是 prompt 模板；`$ARGUMENTS`
-替换为命令后输入的内容；`/name args` 展开成一条用户消息。是声明式
-数据，不是代码——设计原则 3（没有插件系统）不被破坏。内置命令保持
-优先。
-
-**落点。** `cli.ts`、`config.ts`、两份文档树。
-
-### 7. MCP 客户端
-
-**问题。** MCP 生态（数据库、浏览器、API）够不着，而逐个手写集成
-违背极简核心。（dsh 把外部 MCP server 挂为原生工具；pi 刻意不做——
-这让 MCP 成为差异点，而不是跟风。）
-
-**方案。** 只做 stdio 传输。MCP over stdio 就是 agent 与子进程之间的
-换行分隔 JSON-RPC——`shell.ts` 已经会管理这种子进程，不需要 SDK、
-运行时依赖，也不触碰 AGENTS.md 禁止的动态 import。配置里的
-`mcpServers` 声明 command、args 和显式 env 映射（绝不传
-`process.env`——与 `childEnv()` 同一条规则）。发现的工具以
-`mcp__<server>__<tool>` 经动态工具源暴露；`tools/registry.ts`（如今
-是静态的）只新增一个概念：注册表也可以向"源"询问它有哪些工具。
-MCP 工具的失败与其他工具一样归一化为 observation。
-
-**落点。** `src/mcp.ts`（新增）、`tools/registry.ts`、`config.ts`。
-
-**护栏。** MCP server 是以用户权限运行的任意第三方代码——与 shell
-同一信任等级。除非在配置中加白，每次 MCP 工具调用都需要审批，文档
-要把这一点写明白。
+## P1 — 已全部完成（见下方“已完成”）
 
 ## P2 — P1 之后
 
@@ -209,6 +174,10 @@ shell 的只读白名单，要么空转成摆设。某个调用需要用户同�
   （`agent.ts` 零改动）：独立 history、默认只读工具集、独立 `maxSteps`、
   600s 超时、共享父级 abort 信号、审批透传到 `ctx.approve`。最终答案——
   或停止原因——就是观察；v1 子运行不持久化（doc 05 §10）。
+- MCP 客户端（第 7 项）——手写 stdio 上的换行分隔 JSON-RPC（无 SDK、
+  无运行时依赖、无动态 import）；`mcpServers` 配置带显式 env 映射；发现的
+  工具经注册表新增的唯一概念 `ToolSource` 挂载为 `mcp__<server>__<tool>`；
+  除非加白每次调用都需审批，信任模型直白成文（04 篇 §7b、05 篇 §11）。
 - Web 访问（第 2 项）——先 `web_fetch`：客户端 GET，带超时、下载/内容
   上限、content-type 门禁、最小 HTML 转文本，私网/回环目标走审批
   （05 篇 §9）。再 `web_search`：配置所选 API（Brave / Exa / Perplexity，

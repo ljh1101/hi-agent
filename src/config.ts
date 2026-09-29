@@ -27,6 +27,21 @@ export interface WebSearchBackend {
 
 const SEARCH_PROVIDERS = ['brave', 'exa', 'perplexity'] as const
 
+/**
+ * One MCP server (roadmap item 7): a child process speaking newline-delimited
+ * JSON-RPC over stdio. `env` is an explicit map — never `process.env` (the
+ * same rule as the shell's `childEnv()`); `allow` lists tool names that run
+ * without approval. Every other MCP tool call requires approval: an MCP
+ * server is arbitrary third-party code with the user's rights.
+ */
+export interface McpServerConfig {
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+  /** Tool names exempt from the per-call approval. */
+  allow?: string[]
+}
+
 /** Wire protocols the client can speak (see `createLLM`). */
 export type ConfigProtocol = 'openai' | 'anthropic' | 'google'
 const PROTOCOLS: readonly ConfigProtocol[] = ['openai', 'anthropic', 'google']
@@ -43,6 +58,8 @@ export interface HiAgentConfig {
   contextWindow?: number
   /** Backend for the `web_search` tool. Project config wins over global. */
   webSearch?: WebSearchBackend
+  /** MCP servers (stdio) to mount as `mcp__<server>__<tool>` tools. */
+  mcpServers?: Record<string, McpServerConfig>
 }
 
 export interface ConfigOverride {
@@ -62,6 +79,8 @@ export interface ResolvedConfig {
   contextWindow: number | undefined
   /** Backend for the `web_search` tool, when configured. */
   webSearch: WebSearchBackend | undefined
+  /** MCP servers to mount, merged project over global. */
+  mcpServers: Record<string, McpServerConfig>
 }
 
 const CONFIG_FILE_NAME = 'config.json'
@@ -260,7 +279,30 @@ export async function resolveConfig(
 
   const webSearch = resolveWebSearch(project.webSearch, global.webSearch, env)
 
-  return { apiKey, baseURL, model, protocol, contextWindow, webSearch }
+  const mcpServers = resolveMcpServers(project.mcpServers, global.mcpServers)
+
+  return { apiKey, baseURL, model, protocol, contextWindow, webSearch, mcpServers }
+}
+
+/**
+ * Merge MCP server configs: project wins per server name. A server without a
+ * command is a broken configuration the user should hear about at startup —
+ * `McpHub.connect` also tolerates it (logs, skips) for resilience.
+ */
+function resolveMcpServers(
+  project: HiAgentConfig['mcpServers'],
+  global: HiAgentConfig['mcpServers'],
+): Record<string, McpServerConfig> {
+  const merged: Record<string, McpServerConfig> = { ...global, ...project }
+  for (const [name, spec] of Object.entries(merged)) {
+    if (spec === null || typeof spec !== 'object' || typeof spec.command !== 'string') {
+      throw new Error(`mcpServers.${name} must be an object with a "command" string`)
+    }
+    if (spec.command.trim() === '') {
+      throw new Error(`mcpServers.${name}.command must be a non-empty string`)
+    }
+  }
+  return merged
 }
 
 function resolveProtocol(candidate: string | undefined, baseURL: string): ConfigProtocol {

@@ -11,6 +11,7 @@ parts of `src/tools/shell.ts`, and the path-boundary parts of
 | File tools cannot escape the workspace root | **Containment**, mechanically enforced | `resolveToolPath` |
 | Whether a shell command asks the user | **Consent**, heuristic | whitelist + rules + approver |
 | Whether web_fetch may reach a private/loopback address | **Consent**, heuristic | `isPrivateHost` + `ctx.approve` (doc 05 §9) |
+| Whether an MCP tool call runs | **Consent** | per-call `ctx.approve` unless allow-listed (below) |
 
 Every command on the whitelist can read any file the user can read, on every
 platform — the same posture Codex (read-only still reads the whole disk),
@@ -290,6 +291,23 @@ get deny-by-default for anything off the whitelist — the safe default.
 The same hook gates `web_fetch`'s private/loopback targets (doc 05 §9):
 approval is per URL, one host at a time, and never extends to a different
 private host reached by redirect.
+
+## 7b. MCP servers: third-party code, the shell's trust class
+
+An MCP server is **arbitrary third-party code running with the user's
+rights** — the same trust class as the shell, said plainly. Three consequences
+(doc 05 §12, doc 07):
+
+1. **Every MCP tool call requires approval** unless the tool is allow-listed
+   in the server's config (`allow: [...]`); with no approver configured the
+   call is refused, not silently run.
+2. **The child environment is an explicit map**: the config's `env` on top of
+   the OS program-lookup names only. `process.env` is never spread — the same
+   CWE-526 rule as `childEnv()`, and a test asserts a planted secret never
+   reaches the server.
+3. **Containment is not claimed**: a malicious server can do anything the user
+   can do, approval or not. The approval gate is consent; the docs repeat that
+   the honest boundary stays "consent vs containment".
 
 ## 8. Known boundaries and an honest limitations list
 

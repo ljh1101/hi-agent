@@ -57,6 +57,10 @@ CLI flags > 环境变量 > 项目 hi-agent.json > 全局 config.json
     必须成对）→ project → global。存在但无效的段（provider 名字不认识、
     key 为空）启动即抛错；project 段整体取代 global 段——不会出现
     "project 的 provider 配 global 的 key"这种拼装。
+  - `mcpServers`：按 server 名合并，project 覆盖 global。每项必须有非空
+    `command`（否则启动即抛）；`args`、显式 `env` 映射、免逐调用审批的
+    `allow` 名单可选。运行时启动失败的 server 记日志跳过（05 篇 §11、
+    信任模型 04 篇 §7b）。
 - **解析即校验**：JSON 语法错、根不是对象，直接抛带文件路径的错误——
   坏配置要在启动时炸，不能运行中静默走默认。`permissions` 字段在解析时
   就过 `parseRules`（无效条目丢弃，04 篇）。
@@ -150,3 +154,20 @@ cli.ts 的 `pickModel` 用它做实时模型发现，失败回落手输。
 ```
 
 可选 provider：`brave`、`exa`、`perplexity`（05 篇 §9）。
+
+`mcpServers` 挂载 MCP server（stdio）。`env` 映射是显式的——密钥写这里，
+绝不依赖父进程环境：
+
+```json
+{
+  "mcpServers": {
+    "fs": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "allow": ["list_directory", "read_file"]
+    }
+  }
+}
+```
+
+`allow` 之外的工具每次调用都要审批（04 篇 §7b）。

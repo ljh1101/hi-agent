@@ -1,7 +1,8 @@
 # 05 · The Tool Set (tools/*)
 
 Covers: `src/tools/registry.ts`, `index.ts`, `calculator.ts`, `time.ts`,
-`filesystem.ts`, `edit.ts`, `search.ts`, `shell.ts`, `web.ts`, `task.ts`.
+`filesystem.ts`, `edit.ts`, `search.ts`, `shell.ts`, `web.ts`, `task.ts`,
+and the MCP tool source in `src/mcp.ts`.
 
 Tools are plain objects: name + description + JSON Schema + `execute` (plus
 optional `timeoutMs` / `concurrency` / `promptSnippet` / `promptGuidelines`).
@@ -26,6 +27,13 @@ Where a call needs consent the tool calls `ctx.approve` in `execute`.
 `definitions()` projects `{ name, description, parameters }` — the minimal
 set advertised to the model; `execute` and other runtime details stay off
 the wire.
+
+One seam beyond the static map (roadmap item 7): a `ToolSource` — anything
+with `list(): Promise<Tool[]>`. `registry.loadSource(source)` registers what
+a source provides (skipping name collisions: the built-in wins). Discovery is
+asynchronous, so the CLI awaits `loadSource` **before** constructing the
+Agent — the system prompt's tools section is built from the registry at
+construction.
 
 `createDefaultTools({ rules, webSearch, getLLM })` returns the 12 tools;
 `rules` carries the persistent permission rules from project/global config and
@@ -277,7 +285,32 @@ work and item 3.2's content blocks.
 - The LLM arrives through a `getLLM()` closure resolved per call — a
   mid-session `/model` swap applies to sub-agents too.
 
-## 11. New-tool checklist (hard requirements from AGENTS.md)
+## 11. mcp (mcp.ts): the MCP client over stdio
+
+MCP over stdio is newline-delimited JSON-RPC between the agent and a child
+process — hand-written, no SDK, no runtime dependency, no dynamic imports:
+
+- **`McpClient`** spawns the configured `command` (+ args + explicit `env`),
+  runs the `initialize` handshake and `notifications/initialized`, then serves
+  `tools/list` and `tools/call` with id-matched requests. Timeouts are
+  per-request (10s discovery, 120s calls); a call takes the caller's
+  `AbortSignal`. A crashed server or a write failure fails all pending
+  requests with a diagnostic that includes the stderr tail.
+- **`McpHub`** owns one client per configured server and is the `ToolSource`:
+  discovered tools are wrapped as `mcp__<server>__<tool>` (serial concurrency
+  — third-party code never runs two calls at once). A server that fails to
+  start is logged and skipped; one broken server must not take the toolset
+  down. The CLI closes the hub on every exit path, next to `flushSessions()`.
+- **Trust and consent** (doc 04 §7b): every call requires `ctx.approve`
+  unless the tool is in the server config's `allow` list; with no approver,
+  refused. The child env is the OS lookup names plus the explicit config map.
+- **Failures are data**: an `isError` result, a JSON-RPC error, a crash, a
+  timeout and a cancellation all throw — the agent turns each into an
+  `Error: ...` observation like any other tool.
+- Non-text result content is surfaced as `[non-text content: <type>]`
+  placeholders; text parts are joined.
+
+## 12. New-tool checklist (hard requirements from AGENTS.md)
 
 1. **Approval review**: a side-effecting tool has its approval behavior
    reviewed before joining `createDefaultTools()`; where a call needs

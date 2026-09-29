@@ -140,6 +140,7 @@ it robust:
 | `web_fetch` | Fetch a URL and return its text: HTML converted to plain text, JSON passed through, JavaScript never executed; localhost/private targets ask for approval |
 | `web_search` | Search the web via a configured API (Brave, Exa, or Perplexity — set `webSearch` in the global config) |
 | `task` | Delegate a self-contained research brief to a sub-agent with its own context window and a read-only tool set; the sub-agent's answer comes back as the tool result |
+| `mcp__<server>__<tool>` | Tools mounted from configured MCP servers (stdio JSON-RPC, no SDK); every call asks for approval unless allow-listed in the server config |
 
 Adding one is a single object:
 
@@ -343,11 +344,10 @@ the source, and what is explicitly rejected — lives in
 [doc/en/10-roadmap.md](doc/en/10-roadmap.md) (中文:
 [doc/zh/10-roadmap.md](doc/zh/10-roadmap.md)). It was derived from a
 feature comparison against DeepSeek Harness and Pi, filtered by one rule:
-an addition on top of the same loop, never a rewrite. In priority order:
+an addition on top of the same loop, never a rewrite.
 
-1. **MCP client** (stdio, zero-dependency).
-
-Then: workspace instruction auto-load, skills, tool-output spill, overflow
+Everything from P1 has shipped (see below); what remains is P2 and beyond:
+workspace instruction auto-load, skills, tool-output spill, overflow
 recovery, cost display, todo lists, background shell, and — carried over
 from the old list — long-term memory beyond session files.
 
@@ -361,8 +361,10 @@ backend), native providers (reasoning content is captured and displayed
 without ever being echoed back, message content can carry blocks, and
 Anthropic's and Google's native APIs are reachable through dedicated
 adapters behind the same `LLM` interface), session fork (`/fork [n]`),
-custom slash commands from markdown templates, and the `task` sub-agent
-tool for context-isolating research.
+custom slash commands from markdown templates, the `task` sub-agent
+tool for context-isolating research, and the MCP client (stdio JSON-RPC
+with no SDK; MCP tools mount as `mcp__<server>__<tool>` and ask for
+approval unless allow-listed).
 
 Pick the one your use case needs first; the interfaces in `src/types.ts` are
 small enough that none of them require touching the loop.

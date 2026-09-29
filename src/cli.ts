@@ -13,6 +13,7 @@ import type { HiAgentConfig } from './config.ts'
 import { derivePrefixRule, matchesPrefix, parseRules, type PermissionRules } from './permissions.ts'
 import { findCustomCommand, expandCommandTemplate, loadCustomCommands, type CustomCommand } from './commands.ts'
 import { createLLM, LLMError, type LLMProtocol } from './llm.ts'
+import type { LLM } from './types.ts'
 import { listModels, lookupContextWindow, PROVIDERS } from './providers.ts'
 import { splitSubcommands } from './command-parse.ts'
 import {
@@ -318,6 +319,8 @@ interface SessionConfig {
   model: string
   protocol: LLMProtocol
   root: string
+  /** The live LLM; the task tool's sub-agents resolve it per call. */
+  llmRef: { current: LLM }
 }
 
 /**
@@ -630,9 +633,14 @@ async function switchModel(session: SessionConfig, rl: ReturnType<typeof createI
     }
   }
 
-  session.agent.setLLM(
-    createLLM({ apiKey: session.apiKey, baseURL: session.baseURL, model, protocol: session.protocol }),
-  )
+  const next = createLLM({
+    apiKey: session.apiKey,
+    baseURL: session.baseURL,
+    model,
+    protocol: session.protocol,
+  })
+  session.llmRef.current = next
+  session.agent.setLLM(next)
   session.model = model
   const patch: HiAgentConfig = { model }
   // Best-effort window discovery from the models.dev catalog; failure keeps
@@ -858,14 +866,18 @@ async function main(): Promise<void> {
     }
   }
 
-  const agent = new Agent({
-    llm: createLLM({
+  const llmRef: { current: LLM } = {
+    current: createLLM({
       apiKey: config.apiKey,
       baseURL: config.baseURL,
       model: config.model,
       protocol: config.protocol,
     }),
-    tools: createDefaultTools({ rules, webSearch: config.webSearch }),
+  }
+
+  const agent = new Agent({
+    llm: llmRef.current,
+    tools: createDefaultTools({ rules, webSearch: config.webSearch, getLLM: () => llmRef.current }),
     root,
     maxSteps: options.maxSteps ?? 12,
     systemPrompt: options.systemPrompt,
@@ -922,6 +934,7 @@ async function main(): Promise<void> {
     model: config.model,
     protocol: config.protocol,
     root,
+    llmRef,
     yes: options.yes,
     customCommands,
     // A resumed session keeps appending to its original file.

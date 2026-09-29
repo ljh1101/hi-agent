@@ -83,6 +83,7 @@ export { ToolRegistry, createDefaultTools } from './tools/index.ts'
 export { editTool } from './tools/edit.ts'
 export { globTool, grepTool } from './tools/search.ts'
 export { shellTool } from './tools/shell.ts'
+export { createTaskTool } from './tools/task.ts'
 export { createWebFetchTool, createWebSearchTool, webFetchTool, webSearchTool } from './tools/web.ts'
 export type {
   AgentEvent,

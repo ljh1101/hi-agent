@@ -18,24 +18,6 @@
 
 ## P1 — 接下来做
 
-### 1. 并行工具执行
-
-**问题。** 系统提示词已经要求模型在同一轮里批量发起互不依赖的调用，
-但 `agent.ts` 逐个执行：一批五个文件读取要付五次串行往返的延迟。
-（pi 默认并行执行工具调用；dsh 也并发执行批内调用。）
-
-**方案。** 同一 step 的 `tool_calls` 并发执行，但 observation 按
-`tool_calls` 数组的原序追加进 history——存储的 history 必须保持可回放，
-`session.ts` 的每文件写队列会串行化追加，所以顺序在第一次写入前就已
-决定。会改文件的工具（`write_file`、`edit`、shell）经队列串行；只有
-只读工具并发。被取消的调用照旧产生自己的 observation（doc 01）。
-
-**落点。** `agent.ts`（工具执行段）、`types.ts` 中 `Tool` 上的
-serial/concurrent 提示（或复用 `permission`）、`test/` 新用例。
-
-**护栏。** `changes.ts` 日志按 turn 记录、逆序恢复；写操作串行化保证
-日志顺序等于执行顺序。
-
 ### 2. Web 访问：先 `web_fetch`，再 `web_search`
 
 **问题。** hi-agent 完全离线：任何需要当前信息的事——文档、包仓库、
@@ -289,3 +271,7 @@ server，或一个有上限的工作区记忆文件——由 `memory_write` 工�
 - 会话持久化——`--continue` / `--resume`、`/session`、JSONL
   （doc 06）。
 - 撤销——经 `changes.ts` 日志的 `/undo`（doc 06）。
+- 并行工具执行（第 1 项）——同一 step 的 `tool_calls` 并发执行；每个
+  `Tool` 带 `concurrency` 提示（默认 `concurrent`，改状态的
+  `write_file`/`edit`/`shell` 为 `serial`），observation 按 `tool_calls`
+  原序追加，history 保持可回放、日志顺序等于执行顺序（doc 01）。

@@ -171,12 +171,28 @@ run(input, { signal })
 │    ├─ append(assistant message, with tool_calls)
 │    ├─ reply.usage?.totalTokens → usages.set(index of last message, usage)  ← anchor
 │    ├─ reply.toolCalls empty → emit final; finish(content, 'final')
-│    └─ for call of toolCalls:                  ← sequential (parallelism would make the order
-│         observation = executeTool(call)          the model sees nondeterministic; roadmap item)
-│           append({ role:'tool', content, tool_call_id, name })
+│    └─ executeBatch(toolCalls)                  ← parallel, with a per-batch rule
+│         concurrent tools (the default, the      Observations are appended in
+│         read-only set) run in parallel;         `tool_calls` order afterwards,
+│         serial tools (write_file, edit,         so the stored history stays
+│         shell) chain through a batch-local      replayable and the session write
+│         write queue, one at a time              queue emits lines in the order
+│           append({ role:'tool', ... }) x N      the model asked for them.
 │
 │  emit max_steps; finish("Stopped after N steps...", 'max_steps')
 ```
+
+**Parallel tool execution.** The model is asked to batch independent calls
+in one turn, and the loop executes that batch concurrently: each `Tool`
+carries a `concurrency` hint — `concurrent` (the default) starts
+immediately and overlaps with the rest of the batch, `serial` chains
+through a queue local to the batch so a mutating call never overlaps
+another mutating call. The mutating tools (`write_file`, `edit`, `shell`)
+are `serial` because the undo journal records changes in execution order
+and restores them in reverse (doc 06): journal order has to equal
+execution order. Appending the observations happens only after the whole
+batch settles, in `tool_calls` order — execution order may be
+nondeterministic, the order the model sees never is.
 
 Two load-bearing points:
 

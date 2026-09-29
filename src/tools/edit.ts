@@ -39,6 +39,9 @@ export const editTool: Tool<{ path: string; old_string: string; new_string: stri
     additionalProperties: false,
   },
   permission: 'write',
+  // Writes go through the batch's serial queue: the undo journal records in
+  // execution order, and two writes racing would interleave their effects.
+  concurrency: 'serial',
   promptSnippet: 'change a span of an existing file by exact string replacement',
   promptGuidelines: [
     'Before editing, read the exact current text with read_file; old_string must match it character-for-character.',

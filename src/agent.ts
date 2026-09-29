@@ -367,15 +367,21 @@ export class Agent {
         return this.finish(content, step, 'final')
       }
 
-      // Run the requested tools. Independent calls could be parallelized here,
-      // but sequential execution keeps ordering deterministic for the model.
+      // Run the requested tools: calls of `concurrent` tools (the default —
+      // the read-only set) run in parallel; calls of `serial` tools (the
+      // mutating set: write_file, edit, shell) go through the batch's write
+      // queue one at a time, so the undo journal's order equals execution
+      // order. Observations are appended in `tool_calls` order afterwards, so
+      // the stored history stays replayable and the session's per-file write
+      // queue emits lines in the order the model asked for them.
       //
       // Every call gets a result even after an abort, because the history must
       // stay replayable: an assistant message whose tool_calls have no matching
       // tool messages is rejected by every provider on the *next* request. An
       // aborted call therefore reports the abort as its observation.
-      for (const call of reply.toolCalls) {
-        const observation = await this.executeTool(call, signal)
+      const observations = await this.executeBatch(reply.toolCalls, signal)
+      for (const [index, call] of reply.toolCalls.entries()) {
+        const observation = observations[index]!
         this.append({
           role: 'tool',
           content: observation.content,
@@ -467,6 +473,37 @@ export class Agent {
       return { content, toolCalls, usage }
     }
     return this.llm.chat(view, definitions, { signal })
+  }
+
+  /**
+   * Execute one step's batch of tool calls and return the observations in
+   * `tool_calls` order.
+   *
+   * Scheduling follows each tool's `concurrency` hint: `concurrent` tools (the
+   * default, the read-only set) start immediately and overlap; `serial` tools
+   * chain through a queue local to this batch, so a mutating call never
+   * overlaps another mutating call and the undo journal — which records per
+   * turn and restores in reverse — sees execution order. `executeTool` never
+   * rejects (it turns every outcome into an observation), but the queue chain
+   * swallows anyway so one rejected link cannot wedge the later ones.
+   */
+  private async executeBatch(
+    calls: readonly ToolCall[],
+    signal: AbortSignal | undefined,
+  ): Promise<Array<{ content: string; isError: boolean }>> {
+    let queue: Promise<void> = Promise.resolve()
+    const run = (call: ToolCall): Promise<{ content: string; isError: boolean }> => {
+      if (this.registry.get(call.name)?.concurrency !== 'serial') {
+        return this.executeTool(call, signal)
+      }
+      const chained = queue.then(() => this.executeTool(call, signal))
+      queue = chained.then(
+        () => undefined,
+        () => undefined,
+      )
+      return chained
+    }
+    return Promise.all(calls.map(run))
   }
 
   /**

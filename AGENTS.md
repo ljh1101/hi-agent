@@ -115,10 +115,11 @@ These rules are the project's soul. Do not "optimize" them away:
   `test/shell.test.ts`. Assert both dialects explicitly rather than relying on
   the host platform: a host-derived dialect can only ever be tested for the
   host, which is exactly how the PowerShell escaping bug stayed invisible.
-- New tools with side effects should be reviewed for a permission level before
-  being added to `createDefaultTools()`, and a tool that writes a file must call
-  `ctx.recordChange` with the content it replaced, or `/undo` silently cannot
-  reverse it.
+- New tools with side effects should have their approval behavior reviewed
+  before being added to `createDefaultTools()` (where a call needs consent, the
+  tool calls `ctx.approve` in `execute` — there is no static risk field), and a
+  tool that writes a file must call `ctx.recordChange` with the content it
+  replaced, or `/undo` silently cannot reverse it.
 - Cancellation is a first-class path: a run's signal reaches the LLM client and
   every tool, and a cancelled tool call still produces an observation. Do not
   skip the observation — the history must stay replayable, and an assistant

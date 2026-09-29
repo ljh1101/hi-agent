@@ -4,15 +4,21 @@ Covers: `src/tools/registry.ts`, `index.ts`, `calculator.ts`, `time.ts`,
 `filesystem.ts`, `edit.ts`, `search.ts`, `shell.ts`.
 
 Tools are plain objects: name + description + JSON Schema + `execute` (plus
-optional `timeoutMs` / `permission` / `concurrency` / `promptSnippet` /
-`promptGuidelines`). There is no plugin system. The path boundary is doc 04
-§1 and the shell permission chain doc 04 §4 — this document covers each
-tool's own behavior design.
+optional `timeoutMs` / `concurrency` / `promptSnippet` / `promptGuidelines`).
+There is no plugin system. The path boundary is doc 04 §1 and the shell
+permission chain doc 04 §4 — this document covers each tool's own behavior
+design.
 
 `concurrency` schedules the calls of one batch (doc 01): `concurrent` (the
 default) overlaps with the rest of the batch; `serial` runs one at a time in
 `tool_calls` order. The mutating tools are `serial` — `write_file`, `edit`,
 `shell` — because the undo journal records in execution order (doc 06).
+
+Approval behavior lives *inside* each tool, not on a field: the old
+`Tool.permission` badge (read/write/dangerous) was declarative metadata the
+loop never read, and every real gate in this codebase is per-call (the shell
+command, the fetched URL, the MCP allow-list), so the field was dropped.
+Where a call needs consent the tool calls `ctx.approve` in `execute`.
 
 ## 1. Registry and the default tool set
 
@@ -25,17 +31,17 @@ the wire.
 persistent permission rules from project/global config and feeds only the
 shell tool:
 
-| Tool | Permission | Default timeout | In one line |
+| Tool | Approval | Default timeout | In one line |
 | --- | --- | --- | --- |
-| `calculator` | read | 30s | Exact arithmetic (recursive-descent parser, no eval) |
-| `current_time` | read | 30s | Current UTC + local time |
-| `list_dir` | read | 30s | Directory listing ([dir]/[file] + sizes) |
-| `read_file` | read | 30s | Read a text file or a line range |
-| `write_file` | write | 30s | Create/overwrite a file (no approval; escape hatch /undo) |
-| `edit` | write (declarative) | 30s | Unique-string precise replacement (no approval; escape hatch /undo) |
-| `glob` | read | 30s | Find files by path pattern |
-| `grep` | read | 30s | Search contents by regex |
-| `shell` | dangerous | 305s (tool-owned) | Run shell commands (permission chain + process-tree management) |
+| `calculator` | none | 30s | Exact arithmetic (recursive-descent parser, no eval) |
+| `current_time` | none | 30s | Current UTC + local time |
+| `list_dir` | none | 30s | Directory listing ([dir]/[file] + sizes) |
+| `read_file` | none | 30s | Read a text file or a line range |
+| `write_file` | none (bounded by the root + `/undo`) | 30s | Create/overwrite a file |
+| `edit` | none (bounded by the root + `/undo`) | 30s | Unique-string precise replacement |
+| `glob` | none | 30s | Find files by path pattern |
+| `grep` | none | 30s | Search contents by regex |
+| `shell` | deny → allow → read-only whitelist → approver | 305s (tool-owned) | Run shell commands (permission chain + process-tree management) |
 
 ## 2. calculator (calculator.ts)
 
@@ -206,11 +212,12 @@ contract here:
 
 ## 9. New-tool checklist (hard requirements from AGENTS.md)
 
-1. **Permission review**: a side-effecting tool gets its permission level
-   reviewed before joining `createDefaultTools()`; if it needs approval, call
-   `ctx.approve` inside `execute` (the `permission` field is currently
-   declarative metadata the loop does not read — the actual gate is inside
-   the tool, doc 01 §1).
+1. **Approval review**: a side-effecting tool has its approval behavior
+   reviewed before joining `createDefaultTools()`; where a call needs
+   consent, `execute` calls `ctx.approve` with a per-call check (the shell
+   command, the fetched URL, the configured allow-list) — there is no static
+   risk field, and a tool that would need one per tool rather than per call
+   is the wrong shape.
 2. **Writing a file requires `ctx.recordChange`** with the replaced content —
    a writer that skips it makes its own change un-undoable.
 3. **Anything touching the filesystem goes through `resolveToolPath`**

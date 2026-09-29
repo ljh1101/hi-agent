@@ -488,7 +488,6 @@ test('a denied risky action becomes an observation, not a crash', async () => {
     name: 'risky',
     description: 'Asks for approval.',
     parameters: { type: 'object', properties: {}, required: [] },
-    permission: 'dangerous',
     async execute(_args, ctx) {
       const ok = await ctx.approve?.('do the risky thing')
       if (!ok) throw new Error('denied')

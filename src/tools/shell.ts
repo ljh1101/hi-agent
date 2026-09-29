@@ -678,7 +678,6 @@ export function createShellTool(options: ShellToolOptions = {}): Tool<{
     additionalProperties: false,
   },
   timeoutMs: AGENT_FALLBACK_TIMEOUT_MS,
-  permission: 'dangerous',
   // A shell command can write anything anywhere; it must never overlap the
   // file tools or another shell command within a batch.
   concurrency: 'serial',

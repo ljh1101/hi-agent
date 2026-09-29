@@ -1,0 +1,26 @@
+AGENTS.md
+  h_54103a8788b599 118-122
+doc/en/01-agent-loop.md
+  h_54103a8788b599 72,99-110
+doc/en/05-tools.md
+  h_54103a8788b599 7-10,17-22,34,36-44,215-220
+doc/en/10-roadmap.md
+  h_54103a8788b599 61-62,282-295
+doc/zh/01-agent-loop.md
+  h_54103a8788b599 65,89,91-98
+doc/zh/05-tools.md
+  h_54103a8788b599 7-9,16-21,31,33-41,179-183
+doc/zh/10-roadmap.md
+  h_54103a8788b599 50-51,242-252
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "5.30.1",
+  "base_commit_sha": "2bfbabbf454259a92f88b4a4ab5f36f90687605e",
+  "prompts": {},
+  "humans": {
+    "h_54103a8788b599": {
+      "author": "liujiahui <liujiahui1101@163.com>"
+    }
+  }
+}

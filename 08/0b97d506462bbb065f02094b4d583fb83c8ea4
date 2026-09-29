@@ -1,0 +1,48 @@
+README.md
+  h_54103a8788b599 143,347,349-350,364-367
+doc/en/04-safety-and-permissions.md
+  h_54103a8788b599 14,295-311
+doc/en/05-tools.md
+  h_54103a8788b599 4-5,31-37,288-313
+doc/en/07-config-and-providers.md
+  h_54103a8788b599 64-68,172-188
+doc/en/09-testing.md
+  h_54103a8788b599 41,45
+doc/en/10-roadmap.md
+  h_54103a8788b599 24,207-212
+doc/zh/04-safety-and-permissions.md
+  h_54103a8788b599 13,244-256
+doc/zh/05-tools.md
+  h_54103a8788b599 5,29-33,240-262
+doc/zh/07-config-and-providers.md
+  h_54103a8788b599 60-63,157-173
+doc/zh/09-testing.md
+  h_54103a8788b599 37,41
+doc/zh/10-roadmap.md
+  h_54103a8788b599 19,177-180
+package.json
+  h_54103a8788b599 20
+src/cli.ts
+  h_54103a8788b599 15,17,32,879-910,912-915,917,935-943,948-966
+src/config.ts
+  h_54103a8788b599 30-44,61-62,82-83,282-305
+src/mcp.ts
+  h_54103a8788b599 1-406
+src/tools/registry.ts
+  h_54103a8788b599 3-13,35-46
+test/mcp.test.ts
+  h_54103a8788b599 1-274
+test/run.ts
+  h_54103a8788b599 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "5.30.1",
+  "base_commit_sha": "080b97d506462bbb065f02094b4d583fb83c8ea4",
+  "prompts": {},
+  "humans": {
+    "h_54103a8788b599": {
+      "author": "liujiahui <liujiahui1101@163.com>"
+    }
+  }
+}

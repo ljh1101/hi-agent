@@ -338,14 +338,13 @@ the source, and what is explicitly rejected — lives in
 feature comparison against DeepSeek Harness and Pi, filtered by one rule:
 an addition on top of the same loop, never a rewrite. In priority order:
 
-1. **Parallel tool execution** (the loop runs tool calls sequentially today).
-2. **Web access**: a `web_fetch` tool, then `web_search`.
-3. **Reasoning content, content blocks, native providers** (Anthropic,
+1. **Web access**: a `web_fetch` tool, then `web_search`.
+2. **Reasoning content, content blocks, native providers** (Anthropic,
    Google) — staged behind the same `LLM` interface.
-4. **Session fork**, later a branch tree.
-5. **Custom slash commands** from declarative prompt templates.
-6. **Sub-agents**: a read-only `task` tool.
-7. **MCP client** (stdio, zero-dependency).
+3. **Session fork**, later a branch tree.
+4. **Custom slash commands** from declarative prompt templates.
+5. **Sub-agents**: a read-only `task` tool.
+6. **MCP client** (stdio, zero-dependency).
 
 Then: workspace instruction auto-load, skills, tool-output spill, overflow
 recovery, cost display, todo lists, background shell, and — carried over
@@ -353,7 +352,9 @@ from the old list — long-term memory beyond session files.
 
 Formerly on this list and now shipped: context compaction (auto-triggered
 with a discovered `contextWindow`, or `/compact`), session persistence
-(`--continue`/`--resume`, `/session`, JSONL files), and undo (`/undo`).
+(`--continue`/`--resume`, `/session`, JSONL files), undo (`/undo`), and
+parallel tool execution (batched calls run concurrently; mutating tools
+stay serialized so the undo journal order equals execution order).
 
 Pick the one your use case needs first; the interfaces in `src/types.ts` are
 small enough that none of them require touching the loop.

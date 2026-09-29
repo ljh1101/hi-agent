@@ -4,9 +4,14 @@
 `time.ts`、`filesystem.ts`、`edit.ts`、`search.ts`、`shell.ts`。
 
 工具是普通对象：name + description + JSON Schema + `execute`（+ 可选
-`timeoutMs` / `permission` / `promptSnippet` / `promptGuidelines`）。没有
-插件系统。路径边界机制见 04 篇 §1，shell 的权限链见 04 篇 §4——本篇讲
-各工具自身的行为设计。
+`timeoutMs` / `permission` / `concurrency` / `promptSnippet` /
+`promptGuidelines`）。没有插件系统。路径边界机制见 04 篇 §1，shell 的
+权限链见 04 篇 §4——本篇讲各工具自身的行为设计。
+
+`concurrency` 决定一批 `tool_calls` 里的调度方式（见 01 篇）：`concurrent`
+（默认）与批内其他调用并发；`serial` 按 `tool_calls` 原序逐个执行。改状态
+的工具都是 `serial`——`write_file`、`edit`、`shell`——因为 undo 日志按执行
+顺序记录（06 篇）。
 
 ## 1. 注册表与默认工具集
 

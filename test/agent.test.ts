@@ -100,6 +100,167 @@ test('runs several tool calls requested in one turn', async () => {
   )
 })
 
+// ---------------------------------------------------------------------------
+// Parallel tool execution
+// ---------------------------------------------------------------------------
+
+/** A deferred promise the test resolves by hand, to control completion order. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
+
+test('concurrent tool calls in one batch overlap instead of queueing', async () => {
+  // Two calls of the same (default = concurrent) tool; neither is allowed to
+  // resolve until both have started. Sequential execution would deadlock this
+  // script: the first call would never see the second start.
+  const gates = [deferred<string>(), deferred<string>()]
+  let started = 0
+  const gatedTool: Tool<{ text: string }> = {
+    name: 'gated',
+    description: 'Waits until released.',
+    parameters: {
+      type: 'object',
+      properties: { text: { type: 'string' } },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    execute({ text }) {
+      started++
+      return gates[started - 1]!.promise.then((suffix) => `${text}${suffix}`)
+    },
+  }
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('gated', { text: 'a' }, 'call_a'), toolCall('gated', { text: 'b' }, 'call_b')),
+    reply('done'),
+  ])
+  const agent = new Agent({ llm, tools: [gatedTool] })
+  const run = agent.run('go')
+
+  // Give the batch a chance to start both calls, then release them.
+  await new Promise((res) => setTimeout(res, 20))
+  assert.equal(started, 2, 'both calls must be in flight at once')
+  gates[1]!.resolve('!2')
+  gates[0]!.resolve('!1')
+  await run
+
+  // History is in tool_calls order even though the calls completed out of order.
+  const observations = agent.history.filter((message) => message.role === 'tool')
+  assert.deepEqual(
+    observations.map((message) => [message.tool_call_id, message.content]),
+    [
+      ['call_a', 'a!1'],
+      ['call_b', 'b!2'],
+    ],
+  )
+})
+
+test('serial tool calls in one batch run one at a time, in tool_calls order', async () => {
+  // Two calls of a mutating tool. The second must not start until the first
+  // has fully finished — journal order has to equal execution order.
+  const events: string[] = []
+  const slowWriter: Tool<{ label: string }> = {
+    name: 'slow_write',
+    description: 'A stand-in for write_file.',
+    parameters: {
+      type: 'object',
+      properties: { label: { type: 'string' } },
+      required: ['label'],
+      additionalProperties: false,
+    },
+    concurrency: 'serial',
+    async execute({ label }) {
+      events.push(`start:${label}`)
+      await new Promise((res) => setTimeout(res, 10))
+      events.push(`end:${label}`)
+      return `wrote ${label}`
+    },
+  }
+  const llm = new ScriptedLLM([
+    reply(null, toolCall('slow_write', { label: 'a' }, 'call_a'), toolCall('slow_write', { label: 'b' }, 'call_b')),
+    reply('done'),
+  ])
+  const agent = new Agent({ llm, tools: [slowWriter] })
+  await agent.run('go')
+
+  assert.deepEqual(events, ['start:a', 'end:a', 'start:b', 'end:b'])
+})
+
+test('a concurrent call that finishes late still lands in tool_calls order', async () => {
+  // Mixed batch: the concurrent call is released after the serial one has
+  // finished. Appends happen only after the whole batch settles, in the order
+  // the model asked for the calls.
+  const slowRead = deferred<string>()
+  let writerFinished = false
+  const slowReadTool: Tool<Record<string, never>> = {
+    name: 'slow_read',
+    description: 'Waits until released.',
+    parameters: { type: 'object', properties: {}, required: [] },
+    execute: () => slowRead.promise,
+  }
+  const quickWriter: Tool<Record<string, never>> = {
+    name: 'quick_write',
+    description: 'A stand-in for write_file.',
+    parameters: { type: 'object', properties: {}, required: [] },
+    concurrency: 'serial',
+    async execute() {
+      await new Promise((res) => setTimeout(res, 10))
+      writerFinished = true
+      return 'wrote'
+    },
+  }
+  const llm = new ScriptedLLM([
+    reply(
+      null,
+      toolCall('slow_read', {}, 'call_read'),
+      toolCall('quick_write', {}, 'call_write'),
+    ),
+    reply('done'),
+  ])
+  const agent = new Agent({ llm, tools: [slowReadTool, quickWriter] })
+  const run = agent.run('go')
+
+  await new Promise((res) => setTimeout(res, 40))
+  assert.equal(writerFinished, true, 'the serial call finished while the read was still parked')
+  slowRead.resolve('read late')
+  await run
+
+  const observations = agent.history.filter((message) => message.role === 'tool')
+  assert.deepEqual(
+    observations.map((message) => [message.tool_call_id, message.content]),
+    [
+      ['call_read', 'read late'],
+      ['call_write', 'wrote'],
+    ],
+  )
+})
+
+test('serial queue keeps the undo journal order equal to execution order', async () => {
+  // Two writes to the SAME file in one batch: the journal must record them in
+  // execution order so undo restores the pre-batch content.
+  const root = await makeRoot()
+  const file = path.join(root, 'twice-batch.txt')
+  await writeFile(file, 'before-turn')
+
+  const llm = new ScriptedLLM([
+    reply(
+      null,
+      toolCall('write_file', { path: 'twice-batch.txt', content: 'first write' }, 'c1'),
+      toolCall('write_file', { path: 'twice-batch.txt', content: 'second write' }, 'c2'),
+    ),
+    reply('done'),
+  ])
+  const agent = new Agent({ llm, tools: [writeFileTool as Tool], root })
+  await agent.run('write it twice')
+  assert.equal(await readFile(file, 'utf8'), 'second write')
+
+  await agent.undoLastTurn()
+  assert.equal(await readFile(file, 'utf8'), 'before-turn')
+})
+
 test('recovers from an unknown tool by reporting it as an observation', async () => {
   const llm = new ScriptedLLM([reply(null, toolCall('nope', {})), reply('Recovered.')])
   const agent = new Agent({ llm, tools: [echoTool] })

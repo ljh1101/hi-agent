@@ -4,10 +4,15 @@ Covers: `src/tools/registry.ts`, `index.ts`, `calculator.ts`, `time.ts`,
 `filesystem.ts`, `edit.ts`, `search.ts`, `shell.ts`.
 
 Tools are plain objects: name + description + JSON Schema + `execute` (plus
-optional `timeoutMs` / `permission` / `promptSnippet` / `promptGuidelines`).
-There is no plugin system. The path boundary is doc 04 §1 and the shell
-permission chain doc 04 §4 — this document covers each tool's own behavior
-design.
+optional `timeoutMs` / `permission` / `concurrency` / `promptSnippet` /
+`promptGuidelines`). There is no plugin system. The path boundary is doc 04
+§1 and the shell permission chain doc 04 §4 — this document covers each
+tool's own behavior design.
+
+`concurrency` schedules the calls of one batch (doc 01): `concurrent` (the
+default) overlaps with the rest of the batch; `serial` runs one at a time in
+`tool_calls` order. The mutating tools are `serial` — `write_file`, `edit`,
+`shell` — because the undo journal records in execution order (doc 06).
 
 ## 1. Registry and the default tool set
 

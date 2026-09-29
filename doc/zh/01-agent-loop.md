@@ -157,12 +157,23 @@ run(input, { signal })
 │    ├─ append(assistant 消息, 带 tool_calls)
 │    ├─ reply.usage?.totalTokens → usages.set(末条消息索引, usage)  ← 锚定
 │    ├─ reply.toolCalls 为空 → emit final; finish(content, 'final')
-│    └─ for call of toolCalls:                  ← 顺序执行（并行会让模型看到的
-│         observation = executeTool(call)          结果顺序不确定；Roadmap 项）
-│           append({ role:'tool', content, tool_call_id, name })
+│    └─ executeBatch(toolCalls)                  ← 并行执行，批内规则如下
+│         concurrent 工具（默认，即只读集）        Observation 在整批结束后按
+│         立即并发启动；serial 工具                `tool_calls` 原序逐条 append，
+│         （write_file、edit、shell）经批内       存储的 history 保持可回放，
+│         写队列逐个执行                          会话写队列按模型要求的顺序
+│           append({ role:'tool', ... }) x N      落盘。
 │
 │  emit max_steps; finish("Stopped after N steps...", 'max_steps')
 ```
+
+**并行工具执行。** 系统提示词要求模型把互不依赖的调用批在同一轮里，循环
+也就并发地执行这一批：每个 `Tool` 带一个 `concurrency` 提示——`concurrent`
+（默认）立即启动、与批内其他调用重叠；`serial` 挂到批内局部队列上逐个执行，
+保证改状态的调用之间绝不重叠。`write_file`、`edit`、`shell` 是 `serial`，
+原因在 undo 日志（06 篇）：日志按执行顺序记录、按逆序恢复，所以日志顺序
+必须等于执行顺序。observation 的追加发生在整批完成之后、按 `tool_calls`
+原序——执行顺序可以是不确定的，模型看到的顺序从不确定变成确定。
 
 两个关键点：
 

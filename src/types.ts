@@ -185,6 +185,19 @@ export interface Tool<Args = Record<string, unknown>> extends ToolDefinition {
    */
   permission?: ToolPermission
   /**
+   * How calls of this tool within one batch of `tool_calls` are scheduled.
+   *
+   * `concurrent` (the default) runs the calls in parallel with the rest of the
+   * batch; `serial` queues them through the batch's write queue, one at a time,
+   * in `tool_calls` order. Anything that mutates the world — `write_file`,
+   * `edit`, `shell` — must be `serial`: the undo journal records changes in
+   * execution order and restores them in reverse, so journal order has to equal
+   * execution order, and two mutating tools racing would interleave their
+   * effects unpredictably. Reads (read_file, glob, grep, ...) are safe to
+   * overlap and are what parallel execution exists for.
+   */
+  concurrency?: 'serial' | 'concurrent'
+  /**
    * One-line "what am I for" shown in the system prompt's tools section.
    * This is usage guidance (when to reach for this tool, how it cooperates
    * with siblings), not parameter detail — parameters live in the schema.

@@ -257,6 +257,9 @@ export const writeFileTool: Tool<{ path: string; content: string }> = {
     required: ['path', 'content'],
     additionalProperties: false,
   },
+  // Writes go through the batch's serial queue: the undo journal records in
+  // execution order, and two writes racing would interleave their effects.
+  concurrency: 'serial',
   async execute({ path: target, content }, ctx) {
     if (typeof content !== 'string') throw new Error('"content" must be a string')
     const absolute = await resolveToolPath(target, ctx)

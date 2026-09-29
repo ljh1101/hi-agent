@@ -23,28 +23,6 @@ inline; nothing else is ordered.
 
 ## P1 — next up
 
-### 1. Parallel tool execution
-
-**Problem.** The system prompt already asks the model to batch independent
-calls in one turn, but `agent.ts` executes them one at a time: a batch of
-five file reads pays five sequential round-trips of latency. (pi runs tool
-calls in parallel by default; dsh executes batched calls concurrently.)
-
-**Sketch.** Run the `tool_calls` of one step concurrently, but append the
-observations to history in the same order as the `tool_calls` array — the
-stored history must stay replayable, and the per-file write queue in
-`session.ts` serializes appends, so the order is decided before the first
-write. Mutating tools (`write_file`, `edit`, shell) are serialized through
-a queue; only reads run concurrently. A cancelled call still produces its
-observation, as today (doc 01).
-
-**Lands in.** `agent.ts` (tool execution), a serial/concurrent hint on
-`Tool` in `types.ts` (or reuse `permission`), new cases in `test/`.
-
-**Guardrails.** The `changes.ts` journal records per turn and restores in
-reverse order; serializing writes keeps journal order equal to execution
-order.
-
 ### 2. Web access: `web_fetch`, then `web_search`
 
 **Problem.** hi-agent is fully offline: anything needing current
@@ -337,3 +315,8 @@ default:
 - Session persistence — `--continue` / `--resume`, `/session`, JSONL
   (doc 06).
 - Undo — `/undo` via the `changes.ts` journal (doc 06).
+- Parallel tool execution (item 1) — the `tool_calls` of one step run
+  concurrently; each `Tool` carries a `concurrency` hint (`concurrent`
+  default, `serial` for the mutating `write_file`/`edit`/`shell`), and
+  observations are appended in `tool_calls` order so the history stays
+  replayable and journal order equals execution order (doc 01).

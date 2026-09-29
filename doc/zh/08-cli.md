@@ -108,7 +108,28 @@ Allow? [y]es / [a]lways this session / [n]o:
   式两词前缀）入集合。
 - `y`/`yes` 放行本次；其余拒绝。
 
-## 7. 事件渲染 renderEvent
+## 7. 自定义 slash 命令（commands.ts）—— 路线图第 5 项
+
+slash 命令过去硬编码在 cli.ts 里；可复用的提示词如今以**声明式数据**存在，
+不是代码（设计原则 3 依然成立——模板只能变成一条用户消息，不能变成新行为）：
+
+| 位置 | 作用域 |
+| --- | --- |
+| `<root>/.hi-agent/commands/<name>.md` | 项目，随仓库共享 |
+| `<configDir>/commands/<name>.md` | 全局，个人 |
+
+- 文件正文就是 prompt 模板；`$ARGUMENTS` 替换为用户在 `/name` 之后输入的
+  内容。用 split/join 而非 `replace`——含 `$&` 的参数必须保持是数据。
+  模板里没有占位符时，参数作为独立段落追加，用户输入不会被无声吞掉。
+- 优先级：内置命令先行（REPL 先分发 `/reset`、`/model`、`/session`、
+  `/fork`、`/compact`、`/undo`，之后才轮到模板），同名时项目覆盖全局。
+- 只加载文件名为纯 `a-z0-9_-` 的 `*.md`；目录缺失、文件不可读一律跳过，
+  绝不致命。未知的 `/foo` 输入照旧作为普通文本到达模型。
+- 启动时变暗列出已加载的命令名以便发现；加载与展开逻辑在
+  `src/commands.ts`（`loadCustomCommands` / `findCustomCommand` /
+  `expandCommandTemplate`），测试在 `test/commands.test.ts`。
+
+## 8. 事件渲染 renderEvent
 
 | 事件 | 非 verbose | verbose |
 | --- | --- | --- |
@@ -127,13 +148,13 @@ Allow? [y]es / [a]lways this session / [n]o:
 全文；无流式时 final 才打印完整答案。颜色经 `color()` 包装，非 TTY 自动
 去码。
 
-## 8. 错误呈现 printError
+## 9. 错误呈现 printError
 
 `LLMError` 按 status 给 hint：401/403 → key 被拒，查 `AGENT_API_KEY`；
 404 → 查 `AGENT_BASE_URL` 版本段与 `AGENT_MODEL`；429 → 限流稍后重试。
 其余错误原样 message。
 
-## 9. 退出码约定
+## 10. 退出码约定
 
 | 情形 | exitCode |
 | --- | --- |

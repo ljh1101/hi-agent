@@ -23,22 +23,6 @@ inline; nothing else is ordered.
 
 ## P1 — next up
 
-### 5. Custom slash commands (prompt templates)
-
-**Problem.** The slash commands are hard-coded in `cli.ts`; users cannot
-add their own reusable prompts. (pi: registered commands plus markdown
-prompt templates; dsh: a commands registry dispatched without a model
-turn.)
-
-**Sketch.** `.hi-agent/commands/<name>.md` (project) and
-`<configDir>/commands/` (global). The file body is a prompt template;
-`$ARGUMENTS` is substituted with what the user typed after the command;
-`/name args` expands into a user message. Declarative data, not code —
-design principle 3 (no plugin system) stays intact. Built-ins keep
-precedence.
-
-**Lands in.** `cli.ts`, `config.ts`, both doc trees.
-
 ### 6. Sub-agents: the `task` tool
 
 **Problem.** One context carries everything; a broad exploration drowns
@@ -256,6 +240,11 @@ default:
   holding the conversation up to the end of the `n`-th user turn, and the
   REPL continues there; the source file is untouched (doc 06 §6). A real
   branch tree stays a later, separate change.
+- Custom slash commands (item 5) — markdown prompt templates in
+  `.hi-agent/commands/<name>.md` (project) and `<configDir>/commands/`
+  (global); `$ARGUMENTS` is substituted with the typed arguments and the
+  expansion becomes a user message. Declarative data, not code — principle 3
+  intact; built-ins keep precedence (doc 08 §7).
 - Web access (item 2) — `web_fetch` first: a client-side GET with timeout,
   download/content caps, a content-type gate, a minimal HTML-to-text pass,
   and approval for private/loopback targets (doc 05 §9). Then `web_search`

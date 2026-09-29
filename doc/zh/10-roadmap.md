@@ -219,6 +219,10 @@ shell 的只读白名单，要么空转成摆设。某个调用需要用户同�
   全量 history 快照行，正是 compaction 已有的行格式），内容是截至第 `n`
   个 user turn 结束的对话，REPL 随后在 fork 里继续；源文件不动
   （doc 06 §6）。真正的分支树仍是之后另一个独立变更。
+- 自定义 slash 命令（第 5 项）——markdown prompt 模板，放在
+  `.hi-agent/commands/<name>.md`（项目）与 `<configDir>/commands/`（全局）；
+  `$ARGUMENTS` 替换为键入的参数，展开结果成为一条用户消息。是声明式数据
+  而非代码——原则 3 完好；内置命令保持优先（doc 08 §7）。
 - Web 访问（第 2 项）——先 `web_fetch`：客户端 GET，带超时、下载/内容
   上限、content-type 门禁、最小 HTML 转文本，私网/回环目标走审批
   （05 篇 §9）。再 `web_search`：配置所选 API（Brave / Exa / Perplexity，

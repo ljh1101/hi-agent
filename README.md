@@ -70,7 +70,9 @@ Sessions persist to JSONL files: `--continue`/`--resume` restore one at
 startup and `/session` lists or switches; `/fork [n]` copies the conversation
 up to turn `n` into a new session and continues there; `/reset` clears
 history, `/compact` summarizes old history, and `/undo` reverts the last
-turn's file changes. Ctrl+C cancels the turn in flight; twice (or at the prompt) quits.
+turn's file changes. Add your own slash commands by dropping markdown
+templates into `.hi-agent/commands/<name>.md` (or `<configDir>/commands/`
+for global ones) — `$ARGUMENTS` is replaced with what you typed. Ctrl+C cancels the turn in flight; twice (or at the prompt) quits.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |

@@ -7,6 +7,7 @@
  */
 import './agent.test.ts'
 import './calculator.test.ts'
+import './commands.test.ts'
 import './config.test.ts'
 import './context.test.ts'
 import './edit.test.ts'

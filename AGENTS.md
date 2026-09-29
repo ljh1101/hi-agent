@@ -38,7 +38,11 @@ Hard constraints — violating any of these is a regression:
 | --- | --- | --- |
 | `src/types.ts` | The contract: `ChatMessage`, `LLM`, `Tool`, events | Shared by everything; changing it ripples everywhere |
 | `src/agent.ts` | The loop, history, tool execution, error recovery | Do not add business logic here |
-| `src/llm.ts` | OpenAI-compatible client + retry/backoff + SSE streaming | Swap providers by editing this file only |
+| `src/llm.ts` | OpenAI-compatible client + retry/backoff + SSE streaming + the `createLLM` factory | Provider adapters live beside it (`llm-anthropic.ts`, `llm-google.ts`); the loop never learns a wire format |
+| `src/llm-anthropic.ts` | Native Anthropic Messages adapter | Implements the same `LLM` interface; selected by `protocol` |
+| `src/llm-google.ts` | Native Google Gemini adapter | Same contract as above |
+| `src/commands.ts` | Custom slash commands: load templates, expand `$ARGUMENTS` | Declarative data, not code — a template only ever becomes a user message |
+| `src/mcp.ts` | MCP client over stdio (JSON-RPC) + the `ToolSource` hub | Child env is the OS lookup names plus the explicit config map; every tool call needs approval unless allow-listed |
 | `src/context.ts` | Request projection + token accounting + LLM compaction | History is the source of truth; the model only ever sees a projection. Compaction is the one operation that intentionally rewrites history — failure must leave it untouched |
 | `src/prompts/system.ts` | System prompt assembly: identity, tools section, rules | Tools section is built from each tool's `promptSnippet`/`promptGuidelines`; prompt copy lives here, not in `agent.ts` |
 | `src/session.ts` | JSONL session persistence | Appends are the common case; compaction APPENDS a snapshot line (pre-compaction lines stay on disk, replay resumes from the last snapshot). Writes are serialized per file — replay order must match the order the loop produced it. One-shot prompt mode never persists |
@@ -47,7 +51,7 @@ Hard constraints — violating any of these is a regression:
 | `src/providers.ts` | Provider presets + `/models` listing | |
 | `src/permissions.ts` | Shell prefix rules (allow / deny, deny wins) | |
 | `src/command-parse.ts` | Shell command splitting + leading-word extraction | Quoting-aware; shared by shell and permissions |
-| `src/tools/*` | Tool set (registry, calculator, filesystem, search, edit, shell, time) | Each tool is one object |
+| `src/tools/*` | Tool set (registry, calculator, filesystem, search, edit, shell, web, task, time) | Each tool is one object; `registry.ts` also carries the one `ToolSource` seam (MCP discovery) |
 | `src/cli.ts` | Entry point, arg parsing, interactive REPL, approval prompts | |
 | `doc/` | Per-module design docs, bilingual `zh/` + `en/` (`doc/README.md` is the language index) | Updated in the same change as any behavior change, both languages — see Documentation |
 
@@ -59,7 +63,8 @@ These rules are the project's soul. Do not "optimize" them away:
    errors and timeouts all become `Error: ...` observations fed back to the
    model. The loop only throws on *provider* failures (auth, HTTP, network).
 2. **The model is just an interface.** `LLM` has `chat` plus an optional
-   `stream`. Swapping providers means changing `src/llm.ts`, never the loop.
+   `stream`. Swapping providers means changing the client layer (`src/llm.ts`
+   and the adapters beside it), never the loop.
 3. **Tools are just objects.** A tool is a name + description + JSON Schema +
    `execute` (plus optional `promptSnippet`/`promptGuidelines` that feed the
    system prompt's tools section). There is no plugin system.

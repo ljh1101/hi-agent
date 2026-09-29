@@ -42,9 +42,11 @@ typescript 和 @types/node）。
                          │          │          │
               ┌──────────▼──┐  ┌────▼─────┐  ┌─▼──────────────┐
               │   llm.ts    │  │context.ts│  │ tools/*        │
-              │ OpenAI 兼容  │  │ 投影/记账 │  │ 9 个工具对象    │
+              │ OpenAI 兼容  │  │ 投影/记账 │  │ 12 个内置工具   │
               │ 重试/SSE 流  │  │ /LLM 压缩 │  │ (registry 索引) │
               └─────────────┘  └──────────┘  └────────────────┘
+             llm-anthropic.ts / llm-google.ts（原生适配器）
+             mcp.ts（MCP 工具源）  commands.ts（自定义命令）
                                          支撑层：
               session.ts (JSONL 持久化)   changes.ts (撤销日志)
               permissions.ts (前缀规则)   command-parse.ts (命令切分)
@@ -73,7 +75,10 @@ typescript 和 @types/node）。
 | `src/context.ts` | 请求投影、token 记账、LLM 压缩 | [03](03-context-management.md) |
 | `src/permissions.ts` | shell 前缀规则（allow/deny，deny 胜出） | [04](04-safety-and-permissions.md) |
 | `src/command-parse.ts` | shell 命令切分 + 首词提取（方言感知） | [04](04-safety-and-permissions.md) |
-| `src/tools/*` | 工具注册表与 9 个工具 | [05](05-tools.md) |
+| `src/llm-anthropic.ts` / `src/llm-google.ts` | 原生 Anthropic / Google 适配器（同一个 `LLM` 接口） | [02](02-llm-client.md) |
+| `src/commands.ts` | 自定义 slash 命令：模板加载、`$ARGUMENTS` 展开 | [08](08-cli.md) |
+| `src/mcp.ts` | stdio 上的 MCP 客户端；挂载 `mcp__<server>__<tool>` 工具 | [04](04-safety-and-permissions.md)、[05](05-tools.md) |
+| `src/tools/*` | 工具注册表（含唯一的 `ToolSource` 接缝）与 12 个内置工具 | [05](05-tools.md) |
 | `src/session.ts` | JSONL 会话持久化（含写队列串行化） | [06](06-session-and-undo.md) |
 | `src/changes.ts` | 撤销日志：每 turn 写了什么、怎么放回去 | [06](06-session-and-undo.md) |
 | `src/config.ts` | 配置分层（CLI > env > project > global）、密钥解析 | [07](07-config-and-providers.md) |
@@ -88,7 +93,9 @@ typescript 和 @types/node）。
 src/
   types.ts             契约层：消息、模型接口、工具接口、事件
   agent.ts             循环本体（唯一的核心）
-  llm.ts               唯一知道 OpenAI wire 格式的文件
+  llm.ts               OpenAI 兼容客户端、重试/SSE 管道、createLLM 工厂
+  llm-anthropic.ts     原生 Anthropic Messages 适配器
+  llm-google.ts        原生 Google Gemini 适配器
   context.ts           模型看什么（投影）与窗口管理（压缩）
   session.ts           磁盘上的会话文件
   changes.ts           磁盘上发生了什么、如何回退
@@ -97,7 +104,9 @@ src/
   permissions.ts       哪些命令不用问
   command-parse.ts     shell 命令怎么切成子命令
   prompts/system.ts    模型被告知自己是谁
-  tools/               模型能做什么
+  commands.ts          自定义 slash 命令（markdown 模板）
+  mcp.ts               stdio 上的 MCP：JSON-RPC 客户端 + 工具源
+  tools/               模型能做什么（12 个内置 + MCP 挂载）
   cli.ts               人怎么用
 test/                  全部离线：假 LLM + 本地假 provider
 examples/demo.ts       无 key 的离线演示（npm run demo）

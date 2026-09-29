@@ -43,14 +43,14 @@ StreamingLLM 的 `chat` 会抛错，防止意外走错分支。
 | `reasoning.test.ts` | 8 | `reasoning_content` 在 chat 与 stream 中捕获、投影剥离 reasoning 而 history 保留、token 估算忽略 reasoning 并展平 block、摘要转录展平 block、agent 存储且永不回发 reasoning、流式 reasoning 事件、block + reasoning 的会话往返 |
 | `web.test.ts` | 18 | 私网主机名分类（v4/v6/localhost，排除误报）、HTML→文本（script/style/注释/noscript 删除、实体解码、未知实体原样保留）、JSON 透传、HTTP/content-type/URL 协议错误、增量下载上限、内容截断、**回环审批门禁**（无 approver → 拒绝、拒绝 → 不发请求、批准 → 发出请求、请求文案带 URL）、重定向落到另一个私网主机被拦、超时；`web_search`：无后端时的配置指引、Brave/Exa/Perplexity 请求形态（端点、key 头、POST body）与结果格式化、API 报错 |
 | `shell.test.ts` | 45 | **安全敏感核心**：执行/退出码/超时杀进程/输出截尾/workdir 边界；只读分类的对抗矩阵（见 §4）；PowerShell 编码、解析顺序、null 设备；双方言断言 |
-| `agent.test.ts` | 40 | 循环全语义：观察回喂、未知工具/坏 JSON/抛错恢复、maxSteps、事件顺序、系统提示词组装、流式 token/工具调用收齐/中途 abort、审批注入与拒绝成观察、投影与 history 保真、usage 锚定、压缩（替换不堆积/失败不动/应急投影）、取消（per-run signal、取消后观察补齐）、undo（还原字节含行尾、删除新建文件） |
+| `agent.test.ts` | 42 | 循环全语义：观察回喂、未知工具/坏 JSON/抛错恢复、maxSteps、事件顺序、系统提示词组装、流式 token/工具调用收齐/中途 abort、审批注入与拒绝成观察、投影与 history 保真、usage 锚定、压缩（替换不堆积/失败不动/应急投影）、取消（per-run signal、取消后观察补齐）、undo（还原字节含行尾、删除新建文件） |
 | `llm.test.ts` | 26 | wire 格式、history 序列化、id 合成、错误分类（error payload/坏 JSON/无 choices）、总超时、重试（429/5xx/不重试 401/Retry-After/退避边界/退避可中断）、空闲超时（慢流不断、静默断）、SSE 重组、usage |
-| `context.test.ts` | 24 | 剪枝规则（头尾+标记、短结果不剪、**history 不被修改**、透传、身份保留）、保护窗口、天花板与年龄规则顺序、应急投影、chars/4、usage 锚点、阈值比例、切点（不拆 call/result）、摘要转写（单条截断/总量丢旧） |
+| `context.test.ts` | 26 | 剪枝规则（头尾+标记、短结果不剪、**history 不被修改**、透传、身份保留）、保护窗口、天花板与年龄规则顺序、应急投影、chars/4、usage 锚点、阈值比例、切点（不拆 call/result）、摘要转写（单条截断/总量丢旧） |
 | `commands.test.ts` | 7 | 自定义 slash 命令：双目录加载且项目覆盖全局、目录缺失容忍、垃圾文件跳过、每个 `$ARGUMENTS` 都替换、参数保持是数据（`$&` 不被再解释）、无占位符时追加、`/name args` 切分、未知输入拒绝 |
 | `config.test.ts` | 17 | 分层优先级、DeepSeek 触发条件、坏配置抛错、0600、provider 预设、listModels、窗口查询（精确匹配/失败吞掉） |
 | `search.test.ts` | 16 | glob 语法、grep 行格式/include/二进制跳过/context、根边界、.gitignore、符号链接不跟随、遍历中目录消失 |
 | `task.test.ts` | 6 | 子代理：最终答案作为观察（共 3 次模型往返）、默认集拒绝 `write_file`（经子代理自己的答案带回）、审批透传给父级 approver、max_steps 停止原因成为观察、运行中取消 → `Error: the task was cancelled`、600s 工具超时 |
-| `tools.test.ts` | 11 | 读写回环、list_dir、越界拒绝（含**根内链接逃逸**）、空文件/目录占位、行区间与校验 |
+| `tools.test.ts` | 12 | 读写回环、list_dir、越界拒绝（含**根内链接逃逸**）、空文件/目录占位、行区间与校验 |
 | `session.test.ts` | 14 | 回环、撕裂尾行、快照回放（旧行留盘）、**乱序 append 仍有序 + flush**、二次快照取代、列表元数据、id 唯一可排序、agent hook 触发、`/fork`（按 turn 边界切不拆调用与结果、header+快照文件原样回放、源文件不动） |
 | `edit.test.ts` | 10 | 唯一匹配、0/多次拒绝、文件其余不动、根边界、CRLF 文件多行匹配、EOL 保留、尾换行与 mismatch 提示 |
 | `permissions.test.ts` | 9 | 前缀匹配、deny 胜 allow、全子命令过才 allow、裸 & 切分、宽容解析、前缀派生、shell 工具与规则的接线（allow 免问、**deny 压过审批器**、复合命令走私不了） |

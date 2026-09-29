@@ -12,9 +12,14 @@ loadDotEnv → parseArgs
   → (options.setup 或 无 key 且 TTY) → setupFirstRun
   → 仍无 key → 报错退出（提示 --setup / npm run demo）
   → 加载并合并权限规则（project + global，04 篇 mergeRules）
+  → 加载自定义 slash 命令（commands.ts，见本篇 §7）
   → --continue / --resume → 加载历史会话（见 §4）
+  → 配置了 mcpServers → new McpHub + connect()（坏 server 记日志跳过），
+    然后 registry.loadSource(hub)——必须在构造 Agent 之前：系统提示词的
+    工具段由注册表生成
   → new Agent({...}) + restoreHistory + setApprover
   → options.prompt 有值 → 一次性模式；否则 → repl()
+  → finally: mcpHub.close()——任何路径下都不留下 MCP 子进程
 ```
 
 ## 2. 参数（CliOptions）
@@ -89,10 +94,12 @@ history → `agent.restoreHistory`。交互 REPL 的 `store.id` 指向原文件�
 | `/session` | 列会话（新→旧，标当前，带 title） |
 | `/session new` | 新会话（旧文件留盘；`store.id = undefined` 下条 turn 懒建） |
 | `/session <n或id>` | 按序号或 id（精确→前缀）切换；`loadSession` → `restoreHistory` |
-| `/model` | `listModels` 实时列模型 → 选号 → `setLLM`（**对话保留**）→ 查窗口 → `saveGlobalConfig` |
+| `/model` | `listModels` 实时列模型 → 选号 → `setLLM` + `llmRef.current` 更新（子代理跟随，05 篇 §10；**对话保留**）→ 查窗口 → `saveGlobalConfig` |
 | `/model <id>` | 直接切到指定模型 |
 | `/compact` | 手动压缩；成功/失败文案区分 |
 | `/undo` | 撤销上一 turn（三种输出见 06 篇 §3） |
+| `/fork [n]` | 把截至第 `n` 个 turn 结束（省略则全部）的对话复制进**新**会话文件并从那里继续；源文件不动（06 篇 §6） |
+| `/review args` 等 | 自定义命令模板（本篇 §7）：文件正文替换 `$ARGUMENTS` 后成为用户消息 |
 | `exit`/`quit`/`:q` | 退出 |
 
 ### 审批提示 makeApprover

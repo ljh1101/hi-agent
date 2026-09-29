@@ -353,6 +353,9 @@ export class Agent {
       this.append({
         role: 'assistant',
         content: lastContent,
+        // Reasoning stays in the stored history (the CLI can show it on
+        // resume) but the projection strips it from every request.
+        ...(reply.reasoning ? { reasoning: reply.reasoning } : {}),
         ...(reply.toolCalls.length > 0 ? { tool_calls: reply.toolCalls } : {}),
       })
       // Anchor the provider-reported usage at this assistant message: the
@@ -448,6 +451,7 @@ export class Agent {
     const view = this.requestView()
     if (this.stream && this.llm.stream) {
       let content = ''
+      let reasoning = ''
       const toolCalls: ToolCall[] = []
       let usage: LLMResponse['usage']
       try {
@@ -455,6 +459,9 @@ export class Agent {
           if (event.type === 'delta') {
             content += event.delta
             this.emit({ type: 'token', delta: event.delta })
+          } else if (event.type === 'reasoning') {
+            reasoning += event.delta
+            this.emit({ type: 'reasoning', delta: event.delta })
           } else if (event.type === 'tool_call') {
             toolCalls.push(event.call)
           } else {
@@ -470,7 +477,12 @@ export class Agent {
         }
         throw error
       }
-      return { content, toolCalls, usage }
+      return {
+        content,
+        toolCalls,
+        usage,
+        ...(reasoning !== '' ? { reasoning } : {}),
+      }
     }
     return this.llm.chat(view, definitions, { signal })
   }

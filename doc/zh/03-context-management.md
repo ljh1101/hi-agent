@@ -16,7 +16,16 @@
 
 ## 1. 剪枝投影 projectHistory()
 
-对每条 `tool` 消息（system/user/assistant 原样透传）依次测两条规则：
+剪枝对象是 `tool` 消息。system/user/assistant 原样透传，**唯一**的例外是
+一次刻意剥离：assistant 消息的 `reasoning` 会从视图中去掉（存储的 history
+保留），因为推理 provider 会拒绝回显自己的思考——下面的 token 估算也
+从不计入它。
+
+`textOfContent(content)` 是其余一切的展平基础：字符串原样返回；block
+数组只取其中的 `text` block 以换行连接（`thinking`/`image` block 是
+agent 本地载荷，永不展平进上线文本）。
+
+对每条 `tool` 消息依次测两条规则：
 
 **规则 A（年龄规则）** —— 同时满足才触发：
 - 内容长于 `pruneThresholdChars`（默认 2000）；
@@ -60,7 +69,9 @@ if contextWindow > 0 且 contextUsage(view) > thresholdTokens:
 ## 3. token 记账
 
 - `estimateTokens(msg)`：字符数 / 4，含 tool_calls 的 name + arguments。
-  刻意保守（对多数语言偏高估），与 pi / opencode 同一启发式。
+  刻意保守（对多数语言偏高估），与 pi / opencode 同一启发式。block
+  content 经 `textOfContent` 计入；`reasoning` 不计——它从不上请求，
+  给它记账会让估算偏离请求实际携带的量。
 - `contextUsage(messages, usages)`：**混合策略**。从尾向前找最后一条带
   真实 usage 报告的消息作锚点（`usages` 由 agent 维护：assistant 消息索引
   → 产生它的那次请求的 usage；`totalTokens` 天然覆盖"锚点之前的全部 +

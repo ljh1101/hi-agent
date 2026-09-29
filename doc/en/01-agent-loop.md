@@ -17,12 +17,21 @@ OpenAI-compatible provider works directly:
 ```ts
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null          // only assistant may be null
+  content: string | ContentBlock[] | null   // blocks are the structured carrier (roadmap 3.2)
+  reasoning?: string              // agent-local reasoning text (roadmap 3.1)
   tool_calls?: ToolCall[]         // assistant requesting tools
   tool_call_id?: string           // tool message; links back to the request
   name?: string                   // the tool name on a tool message
   summary?: true                  // local marker, see below
 }
+
+A `ContentBlock` is `{ type: 'text' } | { type: 'image' } |
+{ type: 'thinking' }`. Strings remain the common shape — the loop itself
+always produces string content — while block arrays are the carrier for
+structured payload (images ride them once P3's image input lands). Both
+forms are persisted and replayed as-is; `textOfContent` (doc 03) flattens
+blocks where only text can go, and `reasoning` is stripped from every
+request because reasoning providers reject their own output echoed back.
 ```
 
 `summary: true` is an agent-local marker distinguishing a *generated
@@ -109,7 +118,7 @@ workspace root, not per-file user consent, and the escape hatch is `/undo`
 the per-call check (command, URL, allow-list) stated next to it, and has
 its approval behavior reviewed per AGENTS.md.
 
-### AgentEvent (10 kinds)
+### AgentEvent (11 kinds)
 
 The entire information source for UIs and logging; the model never sees them:
 
@@ -123,6 +132,7 @@ The entire information source for UIs and logging; the model never sees them:
 | `max_steps` | steps | Step limit reached |
 | `log` | message | Free-form progress note from inside a tool |
 | `token` | delta | Each text token of a streaming reply |
+| `reasoning` | delta | A reasoning chunk from the stream (verbose UIs show it dimmed) |
 | `context_usage` | tokens | Context estimate before each request |
 | `compaction` | summaryTokens/keptFrom/ok | Compaction finished or failed |
 

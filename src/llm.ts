@@ -7,6 +7,9 @@ import type {
   ToolCall,
   ToolDefinition,
 } from './types.ts'
+import { textOfContent } from './context.ts'
+import { AnthropicLLM, type AnthropicOptions } from './llm-anthropic.ts'
+import { GoogleLLM, type GoogleOptions } from './llm-google.ts'
 
 export interface OpenAICompatibleOptions {
   apiKey: string
@@ -55,6 +58,7 @@ interface WireToolCall {
 interface WireMessage {
   role: string
   content?: string
+  reasoning_content?: string | null
   tool_calls?: WireToolCall[]
   tool_call_id?: string
 }
@@ -74,6 +78,7 @@ interface WireStreamChunk {
   choices?: Array<{
     delta?: {
       content?: string | null
+      reasoning_content?: string | null
       tool_calls?: Array<{
         index?: number
         id?: string
@@ -88,7 +93,9 @@ interface WireStreamChunk {
 
 /** Convert our history into the OpenAI wire format. */
 function toWireMessage(message: ChatMessage): WireMessage {
-  const wire: WireMessage = { role: message.role, content: message.content ?? '' }
+  // Blocks flatten to their text (thinking/image are agent-local payload and
+  // never ride the wire); `reasoning` is never copied at all.
+  const wire: WireMessage = { role: message.role, content: textOfContent(message.content) }
   if (message.tool_calls?.length) {
     wire.tool_calls = message.tool_calls.map((call) => ({
       id: call.id,
@@ -242,6 +249,9 @@ export class OpenAICompatibleLLM implements LLM {
 
     return {
       content: message.content ?? null,
+      ...(typeof message.reasoning_content === 'string' && message.reasoning_content !== ''
+        ? { reasoning: message.reasoning_content }
+        : {}),
       toolCalls: (message.tool_calls ?? []).map(toToolCall),
       usage: parsed.usage
         ? {
@@ -273,6 +283,7 @@ export class OpenAICompatibleLLM implements LLM {
     options.signal?.addEventListener('abort', onExternalAbort, { once: true })
 
     let content = ''
+    let reasoning = ''
     const toolCalls = new Map<number, { id: string; name: string; arguments: string }>()
     let finishReason: string | null = null
     let usage: LLMResponse['usage']
@@ -292,6 +303,10 @@ export class OpenAICompatibleLLM implements LLM {
         if (delta?.content) {
           content += delta.content
           yield { type: 'delta', delta: delta.content }
+        }
+        if (delta?.reasoning_content) {
+          reasoning += delta.reasoning_content
+          yield { type: 'reasoning', delta: delta.reasoning_content }
         }
         if (delta?.tool_calls) {
           for (const raw of delta.tool_calls) {
@@ -455,8 +470,9 @@ function truncate(text: string, max: number): string {
  * Whether a failure is worth retrying. 429 and 5xx are transient; 4xx
  * (bad key, bad request) is the caller's mistake and will not improve on retry.
  * Transport errors without a status (network, timeout) are retryable too.
+ * Shared with the native protocol adapters.
  */
-function isRetryable(error: unknown): boolean {
+export function isRetryable(error: unknown): boolean {
   if (!(error instanceof LLMError)) return false
   if (error.status === undefined) return true
   return error.status === 429 || error.status >= 500
@@ -562,4 +578,49 @@ export function startIdleTimeout(ms: number): IdleTimeout {
  */
 function combineSignals(external: AbortSignal | undefined, timeout: AbortSignal): AbortSignal {
   return external ? AbortSignal.any([external, timeout]) : timeout
+}
+
+// ---------------------------------------------------------------------------
+// Provider factory
+// ---------------------------------------------------------------------------
+
+/** The wire protocol an LLM client speaks. Default: `openai`. */
+export type LLMProtocol = 'openai' | 'anthropic' | 'google'
+
+export interface CreateLLMOptions extends OpenAICompatibleOptions {
+  /** Which native protocol to speak; defaults to `openai` (compatible). */
+  protocol?: LLMProtocol
+}
+
+/**
+ * Build the LLM client for a provider. This is the one place that knows the
+ * protocol classes exist — the loop only ever sees the `LLM` interface ("the
+ * model is just an interface"), and swapping providers means changing this
+ * file, never `agent.ts`.
+ */
+export function createLLM(options: CreateLLMOptions): LLM {
+  switch (options.protocol) {
+    case 'anthropic':
+      return new AnthropicLLM({
+        apiKey: options.apiKey,
+        baseURL: options.baseURL,
+        model: options.model,
+        ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+        ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      })
+    case 'google':
+      return new GoogleLLM({
+        apiKey: options.apiKey,
+        baseURL: options.baseURL,
+        model: options.model,
+        ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+        ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      })
+    default:
+      return new OpenAICompatibleLLM(options)
+  }
 }

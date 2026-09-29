@@ -32,7 +32,7 @@ loadDotEnv → parseArgs
 | `--resume <id>` | 按 id 恢复（精确匹配或前缀匹配，不区分大小写） |
 | `--yes` | 自动批准一切（只该用于可信容器/CI） |
 | `-s/--stream`、`--no-stream` | 流式开关（默认开） |
-| `-v/--verbose` | 显示模型叙述、完整工具输出、step/context 行 |
+| `-v/--verbose` | 显示模型叙述、完整工具输出、step/context 行、实时推理（变暗） |
 | `-h/--help` | 帮助 |
 
 ## 3. setupFirstRun（首次配置向导）
@@ -119,6 +119,7 @@ Allow? [y]es / [a]lways this session / [n]o:
 | tool_call | `-> name(args 首行 120 字符)`（青色箭头） | 同 |
 | tool_result | `ok/!! 首行 (耗时)` | `ok/!! 全文 (耗时)` |
 | token | 原样续写 stdout | 同 |
+| reasoning | 隐藏 | 原样变暗续写（模型的草稿） |
 | final | 换行收束 | 同 |
 | max_steps | 红色提示 | 同 |
 

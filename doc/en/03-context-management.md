@@ -21,8 +21,18 @@ Three mechanisms, light to heavy:
 
 ## 1. The pruning projection projectHistory()
 
-For each `tool` message (system/user/assistant pass through untouched), two
-rules are tested in order:
+Tool messages are the pruning target. System / user / assistant messages
+pass through untouched **except** for one deliberate strip: an assistant
+message's `reasoning` is removed from the view (the stored history keeps it),
+because reasoning providers reject requests that echo their own thinking
+back — and the token estimate below never counts it either.
+
+`textOfContent(content)` is the flattening helper everything else builds on:
+strings pass through; block arrays contribute their `text` blocks joined
+with newlines (`thinking`/`image` blocks are agent-local and never flatten
+into wire-bound text).
+
+For each `tool` message, two rules are tested in order:
 
 **Rule A (age rule)** — fires only when both hold:
 - content longer than `pruneThresholdChars` (default 2000);
@@ -78,7 +88,10 @@ detail for an answer. History is never touched.
 
 - `estimateTokens(msg)`: characters / 4, including tool_calls' name +
   arguments. Deliberately conservative (overestimates for most languages),
-  the same heuristic pi / opencode use.
+  the same heuristic pi / opencode use. Block content counts via
+  `textOfContent`; `reasoning` is not counted — it never rides the request,
+  so charging the window for it would make the estimate diverge from what
+  the request actually carries.
 - `contextUsage(messages, usages)`: a **hybrid strategy**. Walk backwards for
   the last message with a real usage report as the anchor (`usages` is
   maintained by the agent: assistant message index → the usage of the request

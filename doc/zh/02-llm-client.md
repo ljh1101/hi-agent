@@ -1,9 +1,28 @@
 # 02 · LLM 客户端（llm.ts）
 
-覆盖文件：`src/llm.ts`。这是**全项目唯一知道 OpenAI wire 格式的文件**。
-换提供商 = 改这一个文件，循环、工具、上下文层一概不动。基于 Node 18+ 的
-全局 `fetch`，零依赖，兼容 OpenAI / DeepSeek / Moonshot / Groq / Ollama /
-vLLM / LM Studio 等一切 `/chat/completions` 端点。
+覆盖：`src/llm.ts`——OpenAI 兼容客户端、所有传输共用的重试/SSE 管道，
+以及选择协议适配器的 `createLLM` 工厂。换 provider = 改这一个文件（加上
+它分发的适配器文件），循环、工具、上下文层一概不动。基于 Node 18+ 的
+全局 `fetch`，零依赖。
+
+三种传输实现同一个 `LLM` 接口（路线图 3.3）：
+
+| 文件 | 协议 | 端点风格 |
+| --- | --- | --- |
+| `llm.ts`（`OpenAICompatibleLLM`） | `openai`（默认） | `POST {base}/chat/completions`——OpenAI / DeepSeek / Moonshot / Groq / Ollama / vLLM / LM Studio 等 |
+| `llm-anthropic.ts`（`AnthropicLLM`） | `anthropic` | `POST {base}/messages`——原生 Messages API |
+| `llm-google.ts`（`GoogleLLM`） | `google` | `POST {base}/models/{model}:generateContent`（流式 `:streamGenerateContent?alt=sse`）——原生 Gemini API |
+
+协议由 `createLLM({ protocol })` 选择；解析后的配置来自显式配置或按已知
+baseURL 推断（07 篇）。适配器复用 `llm.ts` 的 `LLMError`、`isRetryable`、
+`backoffDelay`、`parseRetryAfter`、`startIdleTimeout`，所以重试/退避与
+超时语义在所有传输上一致。
+
+**Reasoning content（路线图 3.1）。** 推理 provider 会在答案之外流式输出
+隐藏思考。`chat` 把响应里的 `reasoning_content` 字段映射为
+`LLMResponse.reasoning`；`stream` 发出 `{type:'reasoning', delta}` 事件。
+agent 把它存到 assistant 消息上、CLI 里变暗展示，而投影会在之后每次请求
+前剥离它——推理 provider 会拒绝回显它的请求（03 篇）。
 
 ## 1. 构造（OpenAICompatibleOptions）
 
@@ -118,8 +137,10 @@ attempts = maxRetries + 1
 ## 8. wire 格式转换
 
 `toWireMessage`：构建只含 provider 认识字段的新对象（role/content/
-tool_calls/tool_call_id）——`summary: true` 这类本地标记因此天然不上线。
-`content ?? ''`：null content 出线上空串。
+tool_calls/tool_call_id）——`summary: true`、`reasoning` 这类本地标记因此
+天然不上线。content block（路线图 3.2）经 `textOfContent` 展平：text
+block 拼接（thinking 与 image block 是 agent 本地载荷，不走这个传输），
+null content 出线上空串。
 
 `toToolCall`：缺 `function.name` 抛 `LLMError`；缺 id 合成 `call_${index}`
 （有些 provider 不给 id，没有稳定 id 结果就无法回链）。缺 arguments 补 `'{}'`。
@@ -129,6 +150,11 @@ tool_calls/tool_call_id）——`summary: true` 这类本地标记因此天然�
 
 ## 9. 与测试的关系
 
-`fetch` 可注入，`backoffDelay`/`parseRetryAfter`/`startIdleTimeout` 均导出，
-`test/llm.test.ts` 通过 `serveFakeProvider`（本地 HTTP 假端点，09 篇）覆盖
-wire 格式、重试、超时、SSE 重组与错误分类，全程无网络、无真实 key。
+`fetch` 可注入，`backoffDelay`/`parseRetryAfter`/`startIdleTimeout`/
+`isRetryable` 均导出，`test/llm.test.ts` 通过 `serveFakeProvider`（本地
+HTTP 假端点，09 篇）覆盖 wire 格式、重试、超时、SSE 重组与错误分类，全程
+无网络、无真实 key。原生适配器在 `test/native-llm.test.ts` 里接受同样的
+对待：请求形态（system 提取、`tool_use`/`functionCall` 转换、tool 结果
+合并轮）、响应解析（thinking/thought 部分映射为 `reasoning`）、流式 SSE
+映射，以及 `createLLM` 工厂分发。`test/reasoning.test.ts` 覆盖 agent 层的
+reasoning 生命周期与 block 内容的会话往返。

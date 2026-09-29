@@ -20,6 +20,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { ChatMessage } from './types.ts'
+import { textOfContent } from './context.ts'
 
 interface SessionHeader {
   kind: 'header'
@@ -241,7 +242,12 @@ export async function listSessions(configDir: string): Promise<SessionMeta[]> {
       if (parsed.kind === 'compaction') {
         // The snapshot resets the effective history; re-derive the title too.
         messageCount = parsed.history.length
-        title = parsed.history.find((m) => m.role === 'user')?.content?.slice(0, 60) ?? title
+        title =
+          parsed.history
+            .filter((m) => m.role === 'user')
+            .map((m) => textOfContent(m.content))
+            .find((text) => text !== '')
+            ?.slice(0, 60) ?? title
         continue
       }
       // Skip anything that is not a message record: an unknown kind carries no
@@ -249,7 +255,8 @@ export async function listSessions(configDir: string): Promise<SessionMeta[]> {
       if (parsed.kind !== 'message' || !parsed.message) continue
       messageCount++
       if (parsed.message.role === 'user' && title === '') {
-        title = (parsed.message.content ?? '').slice(0, 60)
+        // textOfContent: content may be a block array, not just a string.
+        title = textOfContent(parsed.message.content).slice(0, 60)
       }
     }
     if (!header) continue

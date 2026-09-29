@@ -16,12 +16,20 @@
 ```ts
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null          // 只有 assistant 允许 null
+  content: string | ContentBlock[] | null   // block 是结构化载体（路线图 3.2）
+  reasoning?: string              // agent 本地的推理文本（路线图 3.1）
   tool_calls?: ToolCall[]         // assistant 请求工具时
   tool_call_id?: string           // tool 消息，回链到请求
   name?: string                   // tool 消息的工具名
   summary?: true                  // 本地标记，见下
 }
+
+`ContentBlock` 是 `{ type: 'text' } | { type: 'image' } |
+{ type: 'thinking' }`。字符串仍是常见形态——循环本身总是产出字符串
+content——block 数组是结构化载荷的载体（P3 的图片输入落地后图片就搭它）。
+两种形态都原样持久化、原样回放；`textOfContent`（03 篇）在只能放文本的
+场合把 block 展平，`reasoning` 则在每次请求前被剥离，因为推理 provider
+会拒绝自己的输出被回显。
 ```
 
 `summary: true` 是 agent 本地的标记，标记一条"生成的压缩摘要" system 消息，
@@ -97,7 +105,7 @@ allow 规则 → 只读白名单 → `ctx.approve`"链（详见 04 篇）；文�
 `ctx.approve`，把按调用检查的依据（命令、URL、加白清单）写在旁边，并按
 AGENTS.md 要求评审其审批行为。
 
-### AgentEvent（10 种）
+### AgentEvent（11 种）
 
 UI 和日志的全部信息源，模型永远看不到：
 
@@ -111,6 +119,7 @@ UI 和日志的全部信息源，模型永远看不到：
 | `max_steps` | steps | 达到步数上限 |
 | `log` | message | 工具内部的进度说明 |
 | `token` | delta | 流式回复的每个文本片段 |
+| `reasoning` | delta | 流式推理片段（verbose UI 变暗展示） |
 | `context_usage` | tokens | 每步请求前的上下文估算 |
 | `compaction` | summaryTokens/keptFrom/ok | 压缩完成或失败 |
 

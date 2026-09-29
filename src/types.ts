@@ -27,7 +27,21 @@ export interface ToolCall {
  */
 export interface ChatMessage {
   role: Role
-  content: string | null
+  /**
+   * The message payload: a plain string (the common case) or an array of
+   * `ContentBlock` (the carrier for images and other structured parts —
+   * roadmap 3.2). Both forms are persisted and replayed as-is; helpers in
+   * `context.ts` (`textOfContent`) flatten blocks where only text can go.
+   */
+  content: string | ContentBlock[] | null
+  /**
+   * Reasoning text a reasoning provider streamed alongside the answer
+   * (DeepSeek's `reasoning_content`, Anthropic's thinking blocks).
+   * Agent-local: the CLI may show it, the projection strips it so it is
+   * never sent back (reasoning providers reject requests that echo it), and
+   * the token estimate ignores it. Roadmap 3.1.
+   */
+  reasoning?: string
   /** Present on assistant messages that request tool calls. */
   tool_calls?: ToolCall[]
   /** Present on `tool` messages; links the result back to the request. */
@@ -49,6 +63,18 @@ export interface ChatMessage {
   summary?: true
 }
 
+/**
+ * A structured part of a message payload (roadmap 3.2). `text` is the block
+ * every transport understands; `image` is the payload P3's image input rides
+ * on (base64, no `data:` prefix); `thinking` is the block form of a
+ * reasoning model's scratch work — agent-local like `ChatMessage.reasoning`,
+ * never flattened back onto the wire.
+ */
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mimeType: string; data: string }
+  | { type: 'thinking'; text: string }
+
 /** Minimal JSON Schema subset needed to describe tool arguments. */
 export interface JsonSchema {
   type: 'object'
@@ -60,6 +86,8 @@ export interface JsonSchema {
 /** Normalized model reply. */
 export interface LLMResponse {
   content: string | null
+  /** Reasoning text the model produced before/with the answer, if any. */
+  reasoning?: string
   toolCalls: ToolCall[]
   usage?: {
     promptTokens?: number
@@ -75,6 +103,7 @@ export interface ChatOptions {
 /** One chunk of a streaming reply, normalized across providers. */
 export type StreamEvent =
   | { type: 'delta'; delta: string }
+  | { type: 'reasoning'; delta: string }
   | { type: 'tool_call'; call: ToolCall }
   | { type: 'done'; content: string; finishReason: string | null; usage?: LLMResponse['usage'] }
 
@@ -215,6 +244,8 @@ export type AgentEvent =
   | { type: 'log'; message: string }
   /** A single text token from a streaming reply, for live UI rendering. */
   | { type: 'token'; delta: string }
+  /** A chunk of the model's reasoning text (verbose UIs show it dimmed). */
+  | { type: 'reasoning'; delta: string }
   /**
    * Estimated context size before a model request, using the last reported
    * usage plus a chars/4 estimate for messages after it. Emitted every step.

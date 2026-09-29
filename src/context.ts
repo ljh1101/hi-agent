@@ -12,7 +12,7 @@
  * LLM summarization (compaction) is a separate, later stage.
  */
 
-import type { ChatMessage } from './types.ts'
+import type { ChatMessage, ContentBlock } from './types.ts'
 
 export interface ContextOptions {
   /**
@@ -97,23 +97,47 @@ export function projectHistory(
 ): ChatMessage[] {
   const cutoff = protectedCutoff(history, options.protectedTurns)
   return history.map((message, index) => {
-    if (message.role !== 'tool') return message
-    // Tool messages always carry a string content (only assistant may be null).
-    const content = message.content ?? ''
+    if (message.role === 'tool') {
+      // Tool observations are strings in practice; a block array (restored
+      // from a future writer) flattens to its text so pruning stays typed.
+      const content = typeof message.content === 'string' ? message.content : textOfContent(message.content)
 
-    if (index < cutoff && content.length > options.pruneThresholdChars) {
-      return { ...message, content: pruneMiddle(content, options) }
+      if (index < cutoff && content.length > options.pruneThresholdChars) {
+        return { ...message, content: pruneMiddle(content, options) }
+      }
+
+      if (options.maxToolResultChars > 0 && content.length > options.maxToolResultChars) {
+        // Split the budget evenly: the head carries the shape of the output, the
+        // tail carries the error or the summary line a command usually ends with.
+        const half = Math.floor(options.maxToolResultChars / 2)
+        return { ...message, content: truncateMiddle(content, half, half) }
+      }
+
+      return message
     }
-
-    if (options.maxToolResultChars > 0 && content.length > options.maxToolResultChars) {
-      // Split the budget evenly: the head carries the shape of the output, the
-      // tail carries the error or the summary line a command usually ends with.
-      const half = Math.floor(options.maxToolResultChars / 2)
-      return { ...message, content: truncateMiddle(content, half, half) }
+    // Reasoning is agent-local: it is shown by the CLI and kept in the stored
+    // history, but the model never sees it again — reasoning providers reject
+    // requests that echo it back.
+    if (message.role === 'assistant' && message.reasoning !== undefined) {
+      return { ...message, reasoning: undefined }
     }
-
     return message
   })
+}
+
+/**
+ * The text a message payload carries: strings pass through; block arrays
+ * contribute their `text` blocks joined with newlines. `thinking` and `image`
+ * blocks are agent-local payload — they never flatten into text that could
+ * ride the wire or a summary.
+ */
+export function textOfContent(content: string | ContentBlock[] | null | undefined): string {
+  if (!content) return ''
+  if (typeof content === 'string') return content
+  return content
+    .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
 }
 
 /**
@@ -191,9 +215,13 @@ export function projectRequestView(
 /**
  * Rough per-message token estimate: characters / 4. Conservative by design
  * (overestimates for most languages), same heuristic pi and opencode use.
+ *
+ * `reasoning` is deliberately not counted: it never goes back over the wire
+ * (the projection strips it), so charging the window for it would make the
+ * estimate diverge from what the request actually carries.
  */
 export function estimateTokens(message: ChatMessage): number {
-  let chars = message.content?.length ?? 0
+  let chars = textOfContent(message.content).length
   if (message.tool_calls) {
     for (const call of message.tool_calls) {
       chars += call.name.length + call.arguments.length
@@ -388,9 +416,10 @@ export function serializeForSummary(
   for (const message of messages) {
     if (message.role === 'system') continue
     if (message.role === 'user') {
-      lines.push(`[User]: ${message.content ?? ''}`)
+      lines.push(`[User]: ${textOfContent(message.content)}`)
     } else if (message.role === 'assistant') {
-      if (message.content) lines.push(`[Assistant]: ${message.content}`)
+      const text = textOfContent(message.content)
+      if (text) lines.push(`[Assistant]: ${text}`)
       for (const call of message.tool_calls ?? []) {
         lines.push(`[Assistant tool call]: ${call.name}(${call.arguments})`)
       }

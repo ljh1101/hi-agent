@@ -1,12 +1,18 @@
 /**
- * A small catalog of OpenAI-compatible providers, so first-run setup can fill
- * in the right base URL once the user picks a provider, instead of making them
- * hunt it down themselves.
+ * A small catalog of providers, so first-run setup can fill in the right base
+ * URL once the user picks a provider, instead of making them hunt it down
+ * themselves.
  *
- * The model is deliberately *not* hard-coded here: every OpenAI-compatible
- * provider exposes `GET {baseURL}/models`, so setup queries that endpoint and
- * lets the user pick from the real, currently-available list. `suggestedModel`
- * is only a fallback hint when the endpoint is unreachable.
+ * The model is deliberately *not* hard-coded here: every provider exposes
+ * `GET {baseURL}/models` (the OpenAI-compatible ones), so setup queries that
+ * endpoint and lets the user pick from the real, currently-available list.
+ * `suggestedModel` is only a fallback hint when the endpoint is unreachable.
+ *
+ * `protocol` selects the native wire adapter (roadmap 3.3): undefined means
+ * the OpenAI-compatible `/chat/completions` protocol; `'anthropic'` and
+ * `'google'` route through the native adapters in `llm-anthropic.ts` /
+ * `llm-google.ts`. Anthropic and Google do not expose an OpenAI-style
+ * `/models` listing, so their `suggestedModel` is the primary hint.
  */
 
 export interface ProviderPreset {
@@ -15,6 +21,8 @@ export interface ProviderPreset {
   baseURL: string
   /** Fallback hint only; real models are discovered via the `/models` endpoint. */
   suggestedModel: string
+  /** Wire protocol; undefined = OpenAI-compatible chat completions. */
+  protocol?: 'anthropic' | 'google'
 }
 
 export const PROVIDERS: ProviderPreset[] = [
@@ -23,6 +31,20 @@ export const PROVIDERS: ProviderPreset[] = [
     label: 'OpenAI',
     baseURL: 'https://api.openai.com/v1',
     suggestedModel: 'gpt-4o-mini',
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic (native API)',
+    baseURL: 'https://api.anthropic.com/v1',
+    suggestedModel: 'claude-sonnet-4-5',
+    protocol: 'anthropic',
+  },
+  {
+    id: 'google',
+    label: 'Google Gemini (native API)',
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+    suggestedModel: 'gemini-2.5-flash',
+    protocol: 'google',
   },
   {
     id: 'deepseek',
@@ -64,6 +86,19 @@ export const PROVIDERS: ProviderPreset[] = [
 
 export function findProvider(id: string): ProviderPreset | undefined {
   return PROVIDERS.find((provider) => provider.id === id)
+}
+
+/**
+ * Infer the wire protocol from a base URL by matching a preset. Unknown base
+ * URLs (proxies, gateways, local servers) are OpenAI-compatible — that is the
+ * lingua franca this tool was built around.
+ */
+export function protocolForBaseURL(baseURL: string): 'anthropic' | 'google' | undefined {
+  const normalized = baseURL.replace(/\/+$/, '').toLowerCase()
+  const preset = PROVIDERS.find(
+    (provider) => provider.protocol && provider.baseURL.replace(/\/+$/, '').toLowerCase() === normalized,
+  )
+  return preset?.protocol
 }
 
 // ---------------------------------------------------------------------------

@@ -23,34 +23,6 @@ inline; nothing else is ordered.
 
 ## P1 — next up
 
-### 3. Reasoning content, content blocks, native providers
-
-**Problem.** `ChatMessage` is text-only. OpenAI-compatible reasoning
-providers (DeepSeek included) stream `reasoning_content`, which `llm.ts`
-drops today; Anthropic and Google native APIs are unreachable; images have
-no carrier. (pi normalizes ~35 providers behind one streaming event
-vocabulary with explicit thinking levels; dsh exposes per-route reasoning
-effort.)
-
-**Sketch.** Staged, each stage useful on its own:
-
-1. Capture `reasoning_content` into an optional `reasoning` field on the
-   assistant message: displayed by the CLI, stripped by the projection in
-   `context.ts` so it is never sent back (reasoning providers reject
-   requests that echo it), excluded from the token estimate.
-2. Promote `ChatMessage.content` to blocks (text / image / thinking) with
-   a text-compatible shape. Session files survive unchanged: message lines
-   are JSON and the loader tolerates optional fields. `serializeForSummary`
-   in `context.ts` learns to flatten blocks.
-3. Native adapters — `llm-anthropic.ts`, `llm-google.ts` — implementing the
-   same `LLM` interface from `types.ts`, selected by a `protocol` field on
-   the provider preset in `providers.ts`. The loop never learns about wire
-   formats; "the model is just an interface" (doc README, principle 2)
-   holds.
-
-**Lands in.** `types.ts`, `llm.ts` (+ the new adapter files), `context.ts`,
-`cli.ts`, `providers.ts`.
-
 ### 4. Session fork (then a branch tree)
 
 **Problem.** Sessions can only be switched, not split: one wrong direction
@@ -287,8 +259,17 @@ default:
   default, `serial` for the mutating `write_file`/`edit`/`shell`), and
   observations are appended in `tool_calls` order so the history stays
   replayable and journal order equals execution order (doc 01).
+- Reasoning content, content blocks, native providers (item 3) — staged:
+  (3.1) `reasoning_content` is captured into an agent-local `reasoning`
+  field, displayed by the CLI, stripped by the projection, excluded from the
+  token estimate; (3.2) `ChatMessage.content` carries `ContentBlock` arrays
+  (text / image / thinking) beside the text-compatible string form, flattened
+  by `textOfContent` wherever only text can go; (3.3) native adapters
+  `llm-anthropic.ts` and `llm-google.ts` implement the same `LLM` interface,
+  selected by a `protocol` field on the provider preset (doc 02).
 - Web access (item 2) — `web_fetch` first: a client-side GET with timeout,
   download/content caps, a content-type gate, a minimal HTML-to-text pass,
   and approval for private/loopback targets (doc 05 §9). Then `web_search`
   as a thin client for a config-chosen API (Brave / Exa / Perplexity, doc
-  07); the provider-native server-side web tools remain deferred to item 3.
+  07); the provider-native server-side web tools remain deferred until the
+  per-provider protocol work below exists in the request pipeline itself.

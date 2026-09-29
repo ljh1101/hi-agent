@@ -17,6 +17,7 @@ import { homedir } from 'node:os'
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { parseRules, type PermissionRules } from './permissions.ts'
+import { protocolForBaseURL } from './providers.ts'
 
 /** Which search API `web_search` calls, and the key it calls it with. */
 export interface WebSearchBackend {
@@ -26,10 +27,16 @@ export interface WebSearchBackend {
 
 const SEARCH_PROVIDERS = ['brave', 'exa', 'perplexity'] as const
 
+/** Wire protocols the client can speak (see `createLLM`). */
+export type ConfigProtocol = 'openai' | 'anthropic' | 'google'
+const PROTOCOLS: readonly ConfigProtocol[] = ['openai', 'anthropic', 'google']
+
 export interface HiAgentConfig {
   apiKey?: string
   baseURL?: string
   model?: string
+  /** Wire protocol for the model endpoint; inferred from baseURL when unset. */
+  protocol?: ConfigProtocol
   /** Shell permission rules: `allow` prefixes run without asking, `deny` always reject. */
   permissions?: PermissionRules
   /** Model context window in tokens; enables auto-compaction when set. */
@@ -42,12 +49,15 @@ export interface ConfigOverride {
   apiKey?: string
   baseURL?: string
   model?: string
+  protocol?: ConfigProtocol
 }
 
 export interface ResolvedConfig {
   apiKey: string | undefined
   baseURL: string
   model: string
+  /** Wire protocol for `createLLM`; `'openai'` unless configured/inferred otherwise. */
+  protocol: ConfigProtocol
   /** Model context window (tokens), when configured; enables auto-compaction. */
   contextWindow: number | undefined
   /** Backend for the `web_search` tool, when configured. */
@@ -243,7 +253,24 @@ export async function resolveConfig(
         ? global.contextWindow
         : undefined
 
+  // Protocol: explicit config wins; otherwise inferred from the base URL's
+  // preset (the native Anthropic/Google endpoints), otherwise OpenAI-compatible.
+  const protocolCandidate = override.protocol ?? env.AGENT_PROTOCOL ?? project.protocol ?? global.protocol
+  const protocol = resolveProtocol(protocolCandidate, baseURL)
+
   const webSearch = resolveWebSearch(project.webSearch, global.webSearch, env)
 
-  return { apiKey, baseURL, model, contextWindow, webSearch }
+  return { apiKey, baseURL, model, protocol, contextWindow, webSearch }
+}
+
+function resolveProtocol(candidate: string | undefined, baseURL: string): ConfigProtocol {
+  if (candidate !== undefined) {
+    if (!PROTOCOLS.includes(candidate as ConfigProtocol)) {
+      throw new Error(
+        `protocol must be one of ${PROTOCOLS.map((p) => `"${p}"`).join(', ')} (got "${candidate}")`,
+      )
+    }
+    return candidate as ConfigProtocol
+  }
+  return protocolForBaseURL(baseURL) ?? 'openai'
 }
